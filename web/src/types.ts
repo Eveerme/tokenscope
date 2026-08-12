@@ -59,6 +59,8 @@ export interface ProjectStat {
 
 export interface Summary {
   totals: Totals
+  /** 上一周期等长窗口的 totals（"全部"视图为 null），用于环比 */
+  prev_totals: Totals | null
   by_model: ModelStat[]
   by_tool: ToolStat[]
   by_source: GroupStat[]
@@ -171,7 +173,7 @@ export interface Pricing {
 
 // ---------- 前端共享状态 ----------
 
-export type RangeKey = '7d' | '30d' | '90d' | 'all' | 'custom'
+export type RangeKey = '1d' | '7d' | '30d' | '90d' | 'all' | 'custom'
 
 export interface RangeState {
   key: RangeKey

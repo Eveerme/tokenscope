@@ -68,6 +68,7 @@ export function dayStart(offsetDays: number): number {
 }
 
 export const RANGE_PRESETS: { key: string; label: string; days: number | null }[] = [
+  { key: '1d', label: '今天', days: 1 },
   { key: '7d', label: '近 7 天', days: 6 },
   { key: '30d', label: '近 30 天', days: 29 },
   { key: '90d', label: '近 90 天', days: 89 },

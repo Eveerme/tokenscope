@@ -46,6 +46,25 @@ class TestAggregation:
         assert t["cost"] is not None
         assert abs(t["cost"] - 0.0024) < 1e-6
 
+    def test_prev_totals(self, hermes_db):
+        cfg = _cfg([("hermes", hermes_db)])
+        # 有限窗口有上一周期；全量窗口 prev 为 None
+        summ = server.api_summary(cfg, {"from": ["1700000000"], "to": ["1700000200"]})
+        prev = summ["prev_totals"]
+        assert prev is not None
+        assert prev["sessions"] == 0          # 窗口前没有数据
+        summ_all = server.api_summary(cfg, {})
+        assert summ_all["prev_totals"] is None
+
+    def test_timeline_hour(self, hermes_db):
+        cfg = _cfg([("hermes", hermes_db)])
+        tl = server.api_timeline(cfg, {"from": ["1700000000"], "to": ["1700000200"],
+                                       "granularity": ["hour"]})
+        assert tl["granularity"] == "hour"
+        assert len(tl["points"]) == 1
+        assert tl["points"][0]["date"].endswith(":00")
+        assert tl["points"][0]["input"] == 1000
+
     def test_by_project_merge(self, hermes_db):
         import os
         cfg = _cfg([("hermes", hermes_db)])

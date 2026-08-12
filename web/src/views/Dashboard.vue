@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
-import { fmtCost, fmtNum, fmtTokens } from '../format'
+import { fmtCost, fmtNum, fmtTokens, RANGE_PRESETS } from '../format'
 import type { ModelStat, ProjectStat, RangeState, Summary, TimelinePoint } from '../types'
 import { RANGE_KEY, REFRESH_KEY, TOOL_KEY } from '../injectKeys'
 import { useChart, TOKEN_AXIS, type ChartOption } from '../useChart'
@@ -14,7 +14,16 @@ const toolFilter = inject(TOOL_KEY) as Ref<string>
 const loading = ref(false)
 const summary = ref<Summary | null>(null)
 const tl = ref<TimelinePoint[]>([])
-const gran = ref<'day' | 'week' | 'month'>('day')
+const gran = ref<'day' | 'week' | 'month' | 'hour'>('day')
+
+// 今天视图自动切到小时粒度；切出后恢复按天
+watch(
+  () => rangeState.value.key,
+  (k) => {
+    if (k === '1d') gran.value = 'hour'
+    else if (gran.value === 'hour') gran.value = 'day'
+  },
+)
 
 // 图表容器
 const trendEl = ref<HTMLElement>()
@@ -51,6 +60,13 @@ watch([rangeState, gran, refreshTick, toolFilter], () => load(), { immediate: tr
 
 // ---------- 统计卡片 ----------
 const t = computed(() => summary.value?.totals)
+const prev = computed(() => summary.value?.prev_totals)
+
+/** 环比变化百分比（无上一周期或基数为 0 时为 null） */
+function deltaOf(cur: number | null | undefined, pv: number | null | undefined): number | null {
+  if (cur == null || pv == null || pv === 0) return null
+  return ((cur - pv) / pv) * 100
+}
 
 const cards = computed(() => {
   const tot = t.value
@@ -62,19 +78,23 @@ const cards = computed(() => {
     {
       label: '输入 Tokens', value: fmtTokens(input), sub: `共 ${fmtNum(input)}`,
       icon: '↓', cls: 'bg-blue-50 text-blue-600',
+      delta: deltaOf(tot?.input, prev.value?.input),
     },
     {
       label: '输出 Tokens', value: fmtTokens(output), sub: `共 ${fmtNum(output)}`,
       icon: '↑', cls: 'bg-cyan-50 text-cyan-600',
+      delta: deltaOf(tot?.output, prev.value?.output),
     },
     {
       label: '缓存读取', value: fmtTokens(cr),
       sub: input > 0 ? `约为输入的 ${cacheRatio.toFixed(1)} 倍` : '无输入数据',
       icon: '◎', cls: 'bg-violet-50 text-violet-600',
+      delta: deltaOf(tot?.cache_read, prev.value?.cache_read),
     },
     {
       label: '推理 Tokens', value: fmtTokens(tot?.reasoning ?? 0),
       sub: `共 ${fmtNum(tot?.reasoning ?? 0)}`, icon: '✦', cls: 'bg-amber-50 text-amber-600',
+      delta: deltaOf(tot?.reasoning, prev.value?.reasoning),
     },
     {
       label: '估算成本',
@@ -83,21 +103,55 @@ const cards = computed(() => {
         ? `${tot.unpriced ? `${tot.unpriced} 个会话未定价` : '按定价表估算'}`
         : '未配置定价，见「定价设置」',
       icon: '$', cls: 'bg-emerald-50 text-emerald-600',
+      delta: deltaOf(tot?.cost, prev.value?.cost),
     },
     {
       label: 'API 调用', value: fmtNum(tot?.api_calls ?? 0),
       sub: `共 ${tot?.sessions ?? 0} 个会话`, icon: '⇄', cls: 'bg-rose-50 text-rose-500',
+      delta: deltaOf(tot?.api_calls, prev.value?.api_calls),
     },
     {
       label: '总 Token 消耗', value: fmtTokens((input + output + cr)),
       sub: `输入 + 输出 + 缓存读取`, icon: 'Σ', cls: 'bg-indigo-50 text-indigo-600',
+      delta: deltaOf((input + output + cr), (prev.value ? prev.value.input + prev.value.output + prev.value.cache_read : null)),
     },
     {
       label: '输出 / 输入比', value: input > 0 ? `${((output / input) * 100).toFixed(0)}%` : '—',
       sub: `平均每会话 ${fmtTokens((input + output) / Math.max(1, tot?.sessions ?? 1))}`,
       icon: '≈', cls: 'bg-teal-50 text-teal-600',
+      delta: null,
     },
   ]
+})
+
+// ---------- 摘要横幅 ----------
+const rangeLabel = computed(() => {
+  if (rangeState.value.key === 'custom') return '自定义范围'
+  return RANGE_PRESETS.find((p) => p.key === rangeState.value.key)?.label ?? '全部'
+})
+const summaryText = computed(() => {
+  const s = summary.value
+  if (!s) return ''
+  const tot = s.totals
+  const topTool = [...s.by_tool].sort((a, b) => b.input - a.input)[0]
+  const pct = tot.input > 0 && topTool ? Math.round((topTool.input / tot.input) * 100) : 0
+  const costText = tot.cost != null ? `，估算成本 ${fmtCost(tot.cost)}` : ''
+  const toolText = topTool && pct >= 3 ? `，最活跃工具 ${topTool.label}（${pct}%）` : ''
+  return `${rangeLabel.value} · ${tot.sessions} 个会话 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} · 缓存读取 ${fmtTokens(tot.cache_read)}${costText}${toolText}`
+})
+
+// ---------- 工具占比条 ----------
+const TOOL_COLORS: Record<string, string> = {
+  hermes: '#3b82f6', codex: '#8b5cf6', claude: '#f59e0b', zcode: '#06b6d4',
+}
+const toolShare = computed(() => {
+  const bt = summary.value?.by_tool ?? []
+  const total = bt.reduce((a, b) => a + b.input, 0) || 1
+  return bt.map((s) => ({
+    label: s.label, input: s.input,
+    pct: (s.input / total) * 100,
+    color: TOOL_COLORS[s.key] ?? '#94a3b8',
+  }))
 })
 
 // ---------- 图表 ----------
@@ -122,7 +176,11 @@ function renderTrend() {
     grid: { left: 8, right: 8, top: 36, bottom: 4, containLabel: true },
     xAxis: {
       type: 'category', data: dates,
-      axisLabel: { fontSize: 11, rotate: pts.length > 20 ? 40 : 0 },
+      axisLabel: {
+        fontSize: 11,
+        rotate: pts.length > 20 ? 40 : 0,
+        formatter: gran.value === 'hour' ? (v: string) => v.slice(-5) : undefined,
+      },
     },
     yAxis: [
       { type: 'value', ...TOKEN_AXIS, splitLine: { lineStyle: { color: '#f1f5f9' } } },
@@ -207,6 +265,14 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <div class="text-blue-500 text-sm">加载中…</div>
     </div>
 
+    <!-- 摘要横幅 -->
+    <div
+      v-if="summaryText"
+      class="rounded-2xl bg-gradient-to-r from-blue-50 to-cyan-50 border border-blue-100/60 px-5 py-3.5 text-[13px] text-slate-600 leading-relaxed"
+    >
+      <span class="font-bold text-slate-800">📊 {{ summaryText }}</span>
+    </div>
+
     <!-- 统计卡片 -->
     <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
       <div v-for="c in cards" :key="c.label" class="stat-card p-4">
@@ -217,7 +283,43 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
           <span class="text-xs text-slate-500 font-medium">{{ c.label }}</span>
         </div>
         <div class="text-[22px] leading-8 font-bold text-slate-800 tnum">{{ c.value }}</div>
-        <div class="text-[11px] text-slate-400 mt-0.5 truncate">{{ c.sub }}</div>
+        <div class="flex items-center gap-1.5 mt-0.5 min-h-[16px]">
+          <span
+            v-if="c.delta != null"
+            class="text-[11px] font-semibold"
+            :class="c.delta >= 0 ? 'text-emerald-500' : 'text-rose-500'"
+            :title="`较上一周期${c.delta >= 0 ? '增长' : '下降'} ${Math.abs(c.delta).toFixed(1)}%`"
+          >
+            {{ c.delta >= 0 ? '▲' : '▼' }} {{ Math.abs(c.delta).toFixed(1) }}%
+          </span>
+          <span v-else class="text-[11px] text-slate-400 truncate">{{ c.sub }}</span>
+          <span v-if="c.delta != null" class="text-[10px] text-slate-300 ml-auto truncate">{{ c.sub }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具占比条 -->
+    <div class="stat-card p-5" v-if="toolShare.length > 1">
+      <div class="flex items-center justify-between mb-2.5">
+        <h2 class="text-[15px] font-bold text-slate-800">工具占比</h2>
+        <span class="text-[11px] text-slate-400">按输入 tokens</span>
+      </div>
+      <div class="flex h-3.5 rounded-full overflow-hidden bg-slate-100">
+        <div
+          v-for="s in toolShare"
+          :key="s.label"
+          :style="{ width: s.pct + '%', background: s.color }"
+          :title="`${s.label} ${s.pct.toFixed(1)}%`"
+          class="transition-all"
+        />
+      </div>
+      <div class="flex flex-wrap gap-x-5 gap-y-1 mt-2.5">
+        <span v-for="s in toolShare" :key="s.label" class="flex items-center gap-1.5 text-xs text-slate-600">
+          <span class="w-2.5 h-2.5 rounded-full" :style="{ background: s.color }" />
+          {{ s.label }}
+          <b class="tnum">{{ s.pct.toFixed(1) }}%</b>
+          <span class="text-slate-400">{{ fmtTokens(s.input) }}</span>
+        </span>
       </div>
     </div>
 
@@ -226,6 +328,7 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-[15px] font-bold text-slate-800">Token 消耗趋势</h2>
         <el-radio-group v-model="gran" size="small">
+          <el-radio-button value="hour">按小时</el-radio-button>
           <el-radio-button value="day">按天</el-radio-button>
           <el-radio-button value="week">按周</el-radio-button>
           <el-radio-button value="month">按月</el-radio-button>

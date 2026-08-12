@@ -226,6 +226,29 @@ def _project_key(cwd):
     return c.lower() if os.name == "nt" else c
 
 
+def _totals_of(recs, pricing):
+    """对记录集合汇总 totals（独立函数，供当前窗口与上一周期对比复用）"""
+    t = {"sessions": 0, "input": 0, "output": 0, "cache_read": 0,
+         "cache_write": 0, "reasoning": 0, "api_calls": 0,
+         "priced_cost": 0.0, "unpriced": 0, "cost": None, "priced": False}
+    for r in recs:
+        t["sessions"] += 1
+        t["input"] += r.get("input") or 0
+        t["output"] += r.get("output") or 0
+        t["cache_read"] += r.get("cache_read") or 0
+        t["cache_write"] += r.get("cache_write") or 0
+        t["reasoning"] += r.get("reasoning") or 0
+        t["api_calls"] += r.get("api_calls") or 0
+        c = record_cost(r, pricing)
+        if c is not None:
+            t["priced_cost"] += c
+            t["priced"] = True
+        else:
+            t["unpriced"] += 1
+    t["cost"] = round(t["priced_cost"], 4) if t["priced"] else None
+    return t
+
+
 def api_summary(cfg, qs):
     ts_from, ts_to = parse_range(qs)
     tool = (qs.get("tool") or [""])[0]
@@ -250,20 +273,7 @@ def api_summary(cfg, qs):
         m = r.get("model") or "未知模型"
         tk = r.get("tool") or "unknown"
         sk = r.get("source") or "unknown"
-        totals["sessions"] += 1
-        totals["input"] += r.get("input") or 0
-        totals["output"] += r.get("output") or 0
-        totals["cache_read"] += r.get("cache_read") or 0
-        totals["cache_write"] += r.get("cache_write") or 0
-        totals["reasoning"] += r.get("reasoning") or 0
-        totals["api_calls"] += r.get("api_calls") or 0
         c = record_cost(r, pricing)
-        if c is not None:
-            totals["priced_cost"] += c
-            totals["priced"] = True
-        else:
-            totals["unpriced"] += 1
-
         bm = by_model[m]
         bm["model"] = m
         bm["sessions"] += 1
@@ -308,13 +318,21 @@ def api_summary(cfg, qs):
             bp["cost"] = (bp["cost"] or 0) + c
             bp["priced"] = True
 
-    totals["cost"] = round(totals["priced_cost"], 4) if totals["priced"] else None
+    totals = _totals_of(recs, pricing)
+
+    # 上一周期对比（等长前移窗口；"全部"无边界时不计算）
+    prev_totals = None
+    if ts_from > 0 and ts_to != float("inf"):
+        span = ts_to - ts_from
+        prev_totals = _totals_of(
+            filter_records(all_records(cfg), ts_from - span, ts_from, tool), pricing)
 
     def label(key):
         return parsers.TOOL_LABELS.get(key, key)
 
     return {
         "totals": totals,
+        "prev_totals": prev_totals,
         "by_model": sorted((dict(v) for v in by_model.values()), key=lambda x: x["input"], reverse=True),
         "by_tool": sorted(({**dict(v), "key": k, "label": label(k)} for k, v in by_tool.items()),
                           key=lambda x: x["input"], reverse=True),
@@ -365,14 +383,16 @@ def api_timeline(cfg, qs):
     ts_from, ts_to = parse_range(qs)
     tool = (qs.get("tool") or [""])[0]
     granularity = qs.get("granularity", ["day"])[0]
-    if granularity not in ("day", "week", "month"):
+    if granularity not in ("day", "week", "month", "hour"):
         granularity = "day"
     recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
     buckets = defaultdict(lambda: {"date": "", "input": 0, "output": 0, "cache_read": 0,
                                    "cache_write": 0, "reasoning": 0})
     for r in recs:
         t = datetime.fromtimestamp(r["started_at"])
-        if granularity == "day":
+        if granularity == "hour":
+            key = t.strftime("%Y-%m-%d %H:00")
+        elif granularity == "day":
             key = t.strftime("%Y-%m-%d")
         elif granularity == "week":
             iso = t.isocalendar()
