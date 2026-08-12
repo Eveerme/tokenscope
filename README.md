@@ -1,6 +1,7 @@
 # TokenScope · AI 编程 Token 用量看板
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/Eveerme/tokenscope/actions/workflows/ci.yml/badge.svg)](https://github.com/Eveerme/tokenscope/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](server.py)
 [![Node](https://img.shields.io/badge/Node-18%2B-green)](web/package.json)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](docs/安装手册.md)
