@@ -45,11 +45,24 @@ export interface ToolStat extends GroupStat {
   label: string
 }
 
+export interface ProjectStat {
+  key: string
+  sessions: number
+  input: number
+  output: number
+  cache_read: number
+  reasoning: number
+  api_calls: number
+  cost: number | null
+  priced: boolean
+}
+
 export interface Summary {
   totals: Totals
   by_model: ModelStat[]
   by_tool: ToolStat[]
   by_source: GroupStat[]
+  by_project: ProjectStat[]
   by_task: GroupStat[]
 }
 

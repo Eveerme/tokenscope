@@ -20,6 +20,7 @@ TokenScope · AI 编程 Token 用量看板 — Hermes / Codex / Claude Code / zc
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -32,7 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import parsers
 
 APP_NAME = "TokenScope"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 DEFAULT_PORT = 8787
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -207,6 +208,24 @@ def parse_range(qs, default_days=None):
 # API 实现
 # ---------------------------------------------------------------------------
 
+def _normalize_cwd(cwd):
+    """归一化工作目录：normpath + 折叠连续反斜杠（Claude 解码可能产生 D:\\\work）"""
+    if not cwd:
+        return ""
+    c = os.path.normpath(cwd)
+    while "\\\\" in c:
+        c = c.replace("\\\\", "\\")
+    return c
+
+
+def _project_key(cwd):
+    """工作目录归一化分组键（Windows 不区分大小写）"""
+    c = _normalize_cwd(cwd)
+    if not c:
+        return "(未知项目)"
+    return c.lower() if os.name == "nt" else c
+
+
 def api_summary(cfg, qs):
     ts_from, ts_to = parse_range(qs)
     tool = (qs.get("tool") or [""])[0]
@@ -223,6 +242,9 @@ def api_summary(cfg, qs):
                                    "cache_read": 0, "api_calls": 0, "cost": None})
     by_source = defaultdict(lambda: {"key": "", "label": "", "sessions": 0, "input": 0, "output": 0,
                                      "cache_read": 0, "api_calls": 0, "cost": None})
+    by_project = defaultdict(lambda: {"key": "", "sessions": 0, "input": 0, "output": 0,
+                                      "cache_read": 0, "reasoning": 0, "api_calls": 0,
+                                      "cost": None, "priced": False})
 
     for r in recs:
         m = r.get("model") or "未知模型"
@@ -273,6 +295,19 @@ def api_summary(cfg, qs):
         if c is not None:
             bs["cost"] = (bs["cost"] or 0) + c
 
+        pkey = _project_key(r.get("cwd") or "")
+        bp = by_project[pkey]
+        bp["key"] = _normalize_cwd(r.get("cwd")) or "(未知项目)"
+        bp["sessions"] += 1
+        bp["input"] += r.get("input") or 0
+        bp["output"] += r.get("output") or 0
+        bp["cache_read"] += r.get("cache_read") or 0
+        bp["reasoning"] += r.get("reasoning") or 0
+        bp["api_calls"] += r.get("api_calls") or 0
+        if c is not None:
+            bp["cost"] = (bp["cost"] or 0) + c
+            bp["priced"] = True
+
     totals["cost"] = round(totals["priced_cost"], 4) if totals["priced"] else None
 
     def label(key):
@@ -285,6 +320,7 @@ def api_summary(cfg, qs):
                           key=lambda x: x["input"], reverse=True),
         "by_source": sorted(({**dict(v), "key": k, "label": SOURCE_LABELS.get(k, label(k))} for k, v in by_source.items()),
                             key=lambda x: x["input"], reverse=True),
+        "by_project": sorted((dict(v) for v in by_project.values()), key=lambda x: x["input"], reverse=True),
         "by_task": _api_by_task(cfg, ts_from, ts_to, tool),
     }
 
@@ -489,6 +525,58 @@ def api_models(cfg, qs):
                        sorted(agg.items(), key=lambda x: x[1]["input_tokens"], reverse=True)]}
 
 
+def api_export_csv(cfg, qs):
+    """导出当前筛选条件下的会话明细为 CSV（utf-8-sig，Excel 直接打开不乱码）"""
+    import csv as csvmod
+    import io
+    ts_from, ts_to = parse_range(qs)
+    tool = (qs.get("tool") or [""])[0]
+    recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
+    q = (qs.get("q") or [""])[0].strip().lower()
+    if q:
+        recs = [r for r in recs
+                if q in (r.get("title") or "").lower()
+                or q in (r.get("id") or "").lower()
+                or q in (r.get("model") or "").lower()
+                or q in (r.get("cwd") or "").lower()]
+    model = (qs.get("model") or [""])[0].strip()
+    if model:
+        recs = [r for r in recs if (r.get("model") or "") == model]
+    source = (qs.get("source") or [""])[0].strip()
+    if source:
+        recs = [r for r in recs if (r.get("source") or "") == source]
+    recs.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+    pricing = cfg.get("pricing", {})
+
+    buf = io.StringIO()
+    w = csvmod.writer(buf)
+    w.writerow(["工具", "标题", "模型", "来源", "工作目录", "开始时间", "结束时间",
+                "消息数", "API调用", "输入tokens", "输出tokens", "缓存读取tokens",
+                "缓存写入tokens", "推理tokens", "估算成本USD"])
+    for r in recs:
+        c = record_cost(r, pricing)
+        w.writerow([
+            parsers.TOOL_LABELS.get(r.get("tool", ""), r.get("tool", "")),
+            r.get("title") or "",
+            r.get("model") or "",
+            r.get("source") or "",
+            r.get("cwd") or "",
+            _fmt_ts(r.get("started_at")), _fmt_ts(r.get("ended_at")),
+            r.get("message_count") or 0, r.get("api_calls") or 0,
+            r.get("input") or 0, r.get("output") or 0,
+            r.get("cache_read") or 0, r.get("cache_write") or 0,
+            r.get("reasoning") or 0,
+            "" if c is None else round(c, 6),
+        ])
+    return buf.getvalue()
+
+
+def _fmt_ts(ts):
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ---------------------------------------------------------------------------
 # HTTP 服务
 # ---------------------------------------------------------------------------
@@ -541,9 +629,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(api_sessions(cfg, qs))
         if path == "/api/models":
             return self._send_json(api_models(cfg, qs))
+        if path == "/api/export.csv":
+            content = api_export_csv(cfg, qs)
+            body = content.encode("utf-8-sig")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="tokenscope-sessions.csv"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/pricing":
             return self._send_json({"pricing": cfg.get("pricing", {})})
-        m = __import__("re").match(r"^/api/session/(.+)$", path)
+        m = re.match(r"^/api/session/(.+)$", path)
         if m:
             sid = unquote(m.group(1))
             detail = api_session_detail(cfg, sid)

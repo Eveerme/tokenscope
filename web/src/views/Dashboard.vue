@@ -3,7 +3,7 @@ import { computed, inject, nextTick, ref, watch, type ComputedRef, type Ref } fr
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { fmtCost, fmtNum, fmtTokens } from '../format'
-import type { ModelStat, RangeState, Summary, TimelinePoint } from '../types'
+import type { ModelStat, ProjectStat, RangeState, Summary, TimelinePoint } from '../types'
 import { RANGE_KEY, REFRESH_KEY, TOOL_KEY } from '../injectKeys'
 import { useChart, TOKEN_AXIS, type ChartOption } from '../useChart'
 
@@ -197,6 +197,7 @@ function renderTask() {
 
 // ---------- 模型明细表 ----------
 const modelRows = computed<ModelStat[]>(() => summary.value?.by_model ?? [])
+const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [])
 </script>
 
 <template>
@@ -278,6 +279,38 @@ const modelRows = computed<ModelStat[]>(() => summary.value?.by_model ?? [])
               {{ fmtCost(row.cost) }}
             </span>
           </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- 按项目明细表 -->
+    <div class="stat-card p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-[15px] font-bold text-slate-800">按项目（工作目录）</h2>
+        <span class="text-[11px] text-slate-400">共 {{ projectRows.length }} 个项目</span>
+      </div>
+      <el-table :data="projectRows" size="small">
+        <el-table-column prop="key" label="项目路径" min-width="280" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="font-mono text-[12px]">{{ row.key }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="sessions" label="会话数" align="right" width="90" />
+        <el-table-column prop="api_calls" label="调用次数" align="right" width="100" />
+        <el-table-column label="输入" align="right" width="110">
+          <template #default="{ row }">{{ fmtTokens(row.input) }}</template>
+        </el-table-column>
+        <el-table-column label="输出" align="right" width="110">
+          <template #default="{ row }">{{ fmtTokens(row.output) }}</template>
+        </el-table-column>
+        <el-table-column label="缓存读取" align="right" width="120">
+          <template #default="{ row }">{{ fmtTokens(row.cache_read) }}</template>
+        </el-table-column>
+        <el-table-column label="推理" align="right" width="100">
+          <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
+        </el-table-column>
+        <el-table-column label="估算成本" align="right" width="110">
+          <template #default="{ row }">{{ fmtCost(row.cost) }}</template>
         </el-table-column>
       </el-table>
     </div>

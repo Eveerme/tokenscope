@@ -104,6 +104,18 @@ function onPageChange(p: number) {
   load()
 }
 
+// ---------- CSV 导出 ----------
+const exportUrl = computed(() => {
+  const p = new URLSearchParams()
+  if (rangeState.value.from != null) p.set('from', String(rangeState.value.from))
+  if (rangeState.value.to != null) p.set('to', String(rangeState.value.to))
+  if (toolFilter.value !== 'all') p.set('tool', toolFilter.value)
+  if (q.value.trim()) p.set('q', q.value.trim())
+  if (model.value) p.set('model', model.value)
+  if (source.value) p.set('source', source.value)
+  return `/api/export.csv?${p.toString()}`
+})
+
 // ---------- 详情抽屉 ----------
 const drawerOpen = ref(false)
 const detail = ref<SessionDetail | null>(null)
@@ -148,6 +160,9 @@ function usageTotal(field: 'input_tokens' | 'output_tokens' | 'cache_read_tokens
       <el-select v-model="source" placeholder="全部来源" clearable class="!w-36">
         <el-option v-for="s in sourceOptions" :key="s.key" :label="s.label" :value="s.key" />
       </el-select>
+      <a :href="exportUrl" download class="no-underline">
+        <el-button size="small" type="primary" plain :icon="'Download'">导出 CSV</el-button>
+      </a>
       <span class="text-xs text-slate-400 ml-auto">共 {{ fmtNum(total) }} 个会话</span>
     </div>
 

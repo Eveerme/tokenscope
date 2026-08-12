@@ -357,9 +357,19 @@ def parse_codex(state_db):
 # ---------------------------------------------------------------------------
 
 def _decode_claude_project(name):
-    """Claude 项目目录名解码（D--work-AI-AiAgent -> D:\\work\\AI\\AiAgent）"""
-    s = name.replace("--", "\\")
-    return s
+    """Claude 项目目录名解码。
+
+    Claude 把路径中的特殊字符（:\\/ 等）逐个转义为 '-'：
+      D:\\work\\AI\\AiAgent\\agent -> D--work-AI-AiAgent-agent
+    解码启发式：
+      - 盘符开头（如 D--work...）：第一个 '--' 还原为 ':\\'，其余 '-' -> '\\'
+      - 非盘符（macOS/Linux）：'-' -> '/'
+    原始路径含 '-' 的场景（编码为 -2d 等）无法完美还原，属边缘情况。
+    """
+    if re.match(r"^[A-Za-z]--", name):
+        s = name.replace("--", ":\\", 1)
+        return s.replace("-", "\\")
+    return name.replace("-", "/")
 
 
 def _claude_text(content):
