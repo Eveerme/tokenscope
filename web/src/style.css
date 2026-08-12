@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+:root {
+  --el-color-primary: #3b82f6;
+  --el-color-primary-light-3: #7db1f9;
+  --el-color-primary-light-5: #a5c8fb;
+  --el-color-primary-light-7: #cedefd;
+  --el-color-primary-light-8: #e1ebfe;
+  --el-color-primary-light-9: #f0f6ff;
+  --el-color-primary-dark-2: #2f6fe0;
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  background: #f3f6fb;
+  color: #1f2937;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 卡片通用样式 */
+.stat-card {
+  background: #ffffff;
+  border-radius: 14px;
+  border: 1px solid #eef1f6;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 8px 24px -12px rgba(59, 130, 246, 0.12);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.stat-card:hover {
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.07), 0 14px 32px -14px rgba(59, 130, 246, 0.22);
+  transform: translateY(-1px);
+}
+
+/* Element Plus 细节微调 */
+.el-card {
+  --el-card-border-color: #eef1f6;
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+.el-table {
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-header-text-color: #475569;
+  --el-table-border-color: #eef1f6;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+.el-drawer {
+  --el-drawer-bg-color: #ffffff;
+}
+.el-dialog {
+  border-radius: 14px;
+}
+.el-pagination {
+  --el-pagination-bg-color: transparent;
+}
+
+/* 数字等宽，便于对比 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}

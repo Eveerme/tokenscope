@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "TokenScope",
+    "kind": "python",
+    "build": ["cd web && npm run build"],
+    "test": ["python -c \"import ast; [ast.parse(open(f, encoding='utf-8').read()) for f in ('server.py', 'parsers.py')]\""],
+    "start": "python server.py --no-browser",
+    "port": 8787,
+    "readinessPath": "/api/health",
+    "evidence": ["server.py", "parsers.py", "web/dist/index.html"]
+  }
+}

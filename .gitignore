@@ -1,0 +1,23 @@
+# ---------- 依赖 ----------
+node_modules/
+web/node_modules/
+
+# ---------- 运行时产物 ----------
+logs/
+*.log
+.tokenscope.pid
+.verify-server.log
+
+# ---------- 个人配置（含数据源绝对路径与定价，不入库） ----------
+config.json
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+
+# ---------- 临时 ----------
+_probe*.py
