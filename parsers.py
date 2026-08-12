@@ -107,7 +107,7 @@ def _latest_state_db(home):
 
 
 def discover():
-    """自动发现四类工具的数据源: [{type, name, path}]"""
+    """自动发现已安装工具的数据源: [{type, name, path}]"""
     out = []
     # --- Hermes: state.db（主实例 + profiles）---
     home = _hermes_home()

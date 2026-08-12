@@ -96,7 +96,7 @@ async function removeSource(s: SourceInfo) {
       <div class="flex-1 min-w-[260px]">
         <h2 class="text-[15px] font-bold text-slate-800 mb-1">数据源</h2>
         <p class="text-xs text-slate-500 leading-relaxed">
-          自动发现四类工具的本地数据（只读访问，不修改任何数据）：
+          自动发现已安装工具的本地数据（只读访问，不修改任何数据）：
           Hermes 主实例与各 profile 的 <code class="bg-slate-100 rounded px-1 font-mono">state.db</code>、
           Codex 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.codex\state_*.sqlite</code>、
           Claude Code 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.claude\projects</code>、

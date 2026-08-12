@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hermes Token Stats — Hermes / Codex / Claude Code / zcode 四工具 token 消耗统计 Web 平台
+TokenScope · AI 编程 Token 用量看板 — Hermes / Codex / Claude Code / zcode 等 AI 编程工具的 token 消耗统计 Web 平台
 
 用法:
     python server.py            # 默认 127.0.0.1:8787
@@ -9,7 +9,7 @@ Hermes Token Stats — Hermes / Codex / Claude Code / zcode 四工具 token 消�
     python server.py --no-browser
 
 数据源:
-    - 自动发现四类工具的本地数据（见 parsers.py）:
+    - 自动发现已安装工具的本地数据（见 parsers.py）:
       Hermes   %LOCALAPPDATA%\\hermes\\state.db + profiles/*
       Codex    ~/.codex/state_*.sqlite（threads 表 + rollout JSONL 明细）
       Claude   ~/.claude/projects/*/*.jsonl（assistant 消息 usage）
