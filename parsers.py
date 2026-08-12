@@ -311,9 +311,13 @@ def _codex_source_from_originator(raw):
     return None
 
 
-def parse_codex(state_db):
+def parse_codex(state_db, default_model=None):
+    """解析 Codex 的 state_*.sqlite（threads 表）+ rollout JSONL 明细。
+
+    default_model: 模型名兜底；不传则读 ~/.codex/config.toml（测试/离线环境可显式传入）"""
     recs = []
-    default_model = _codex_default_model()
+    if default_model is None:
+        default_model = _codex_default_model()
     try:
         conn = sqlite3.connect(state_db)
         conn.row_factory = sqlite3.Row

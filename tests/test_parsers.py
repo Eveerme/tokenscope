@@ -37,12 +37,12 @@ class TestHermes:
 
 class TestCodex:
     def test_full_parse(self, codex_db):
-        recs = parsers.parse_codex(str(codex_db))
+        recs = parsers.parse_codex(str(codex_db), default_model="gpt-test")
         assert len(recs) == 3
         by_id = {r["id"]: r for r in recs}
 
         r1 = by_id["t1"]
-        assert r1["model"] != ""            # 来自 config.toml（存在则读，测试环境可能为空串）
+        assert r1["model"] == "gpt-test"    # 显式传入，不依赖本机 config.toml
         assert r1["source"] == "desktop"    # Codex Desktop -> desktop
         assert r1["input"] == 100
         assert r1["output"] == 20
@@ -54,25 +54,23 @@ class TestCodex:
         assert abs(r1["started_at"] - 1700000000.0) < 1
 
     def test_zero_usage_keeps_source(self, codex_db):
-        recs = {r["id"]: r for r in parsers.parse_codex(str(codex_db))}
+        recs = {r["id"]: r for r in parsers.parse_codex(str(codex_db), default_model="gpt-test")}
         r2 = recs["t2"]
         assert r2["input"] == 0
         assert r2["output"] == 0
         assert r2["source"] == "desktop"    # 0 消耗会话仍按 originator 归源
 
     def test_cli_originator(self, codex_db):
-        recs = {r["id"]: r for r in parsers.parse_codex(str(codex_db))}
+        recs = {r["id"]: r for r in parsers.parse_codex(str(codex_db), default_model="gpt-test")}
         assert recs["t3"]["source"] == "cli"    # Codex CLI -> cli
 
 
 class TestClaude:
     def test_parse_accumulate(self, claude_projects):
-        recs = parsers.parse_claude(str(claude_projects))
-        assert len(recs) == 2
-        r = recs[0]
+        recs = {r["title"]: r for r in parsers.parse_claude(str(claude_projects))}
+        r = recs["你好"]
         assert r["tool"] == "claude"
         assert r["cwd"] == r"D:\work\AI\Proj"  # D--work-AI-Proj 解码
-        assert r["title"] == "你好"
         assert r["input"] == 15        # 10 + 5
         assert r["output"] == 22       # 20 + 2
         assert r["cache_read"] == 31   # 30 + 1
@@ -82,9 +80,8 @@ class TestClaude:
         assert r["message_count"] == 3
 
     def test_user_only_session(self, claude_projects):
-        recs = parsers.parse_claude(str(claude_projects))
-        r = recs[1]
-        assert r["title"] == "hi"
+        recs = {r["title"]: r for r in parsers.parse_claude(str(claude_projects))}
+        r = recs["hi"]
         assert r["api_calls"] == 0
         assert r["input"] == 0
 
