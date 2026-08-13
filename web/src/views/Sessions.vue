@@ -192,13 +192,6 @@ function usageTotal(field: 'input_tokens' | 'output_tokens' | 'cache_read_tokens
             <el-tag size="small" effect="plain" class="font-mono !text-[11px]">{{ row.model }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="source_label" label="来源" width="90">
-          <template #default="{ row }">
-            <el-tag size="small" type="info" effect="light">{{ row.source_label }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="message_count" label="消息" align="right" width="70" sortable="custom" />
-        <el-table-column prop="api_call_count" label="调用" align="right" width="80" sortable="custom" />
         <el-table-column label="输入" align="right" width="100" sortable="custom" prop="input_tokens">
           <template #default="{ row }">{{ fmtTokens(row.input_tokens) }}</template>
         </el-table-column>
@@ -207,9 +200,6 @@ function usageTotal(field: 'input_tokens' | 'output_tokens' | 'cache_read_tokens
         </el-table-column>
         <el-table-column label="缓存读" align="right" width="100" sortable="custom" prop="cache_read_tokens">
           <template #default="{ row }">{{ fmtTokens(row.cache_read_tokens) }}</template>
-        </el-table-column>
-        <el-table-column label="推理" align="right" width="90" sortable="custom" prop="reasoning_tokens">
-          <template #default="{ row }">{{ fmtTokens(row.reasoning_tokens) }}</template>
         </el-table-column>
         <el-table-column label="成本" align="right" width="90" sortable="custom" prop="cost">
           <template #default="{ row }">
