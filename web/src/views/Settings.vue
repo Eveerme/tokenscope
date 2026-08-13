@@ -90,8 +90,8 @@ async function save() {
 async function fillExample() {
   try {
     await ElMessageBox.confirm(
-      '将用示例定价（DeepSeek / GPT / Claude 官方参考价）覆盖当前全部定价，继续？',
-      '填充示例定价',
+      '将用内置定价表（pricing.json，以 model-pricing.json 为准）覆盖当前全部定价，继续？',
+      '恢复内置定价表',
       { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '取消' },
     )
   } catch {
@@ -101,7 +101,7 @@ async function fillExample() {
     const res = await api.examplePricing()
     rows.value = toRows(res.pricing)
     refreshTick.value++
-    ElMessage.success('已填充示例定价')
+    ElMessage.success('已恢复内置定价表')
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
@@ -125,7 +125,7 @@ async function fillExample() {
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-[13px] font-bold text-slate-700">定价配置</h3>
         <div class="flex items-center gap-2">
-          <el-button size="small" @click="fillExample">填充示例定价</el-button>
+          <el-button size="small" @click="fillExample">恢复内置定价表</el-button>
           <el-button size="small" :icon="Plus" @click="addRow">添加模型</el-button>
           <el-button size="small" type="primary" :loading="saving" @click="save">保存</el-button>
         </div>

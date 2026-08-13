@@ -1,0 +1,453 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "modelId": "claude-fable-5",
+      "displayName": "Claude Fable 5",
+      "inputCostPerMillion": "10",
+      "outputCostPerMillion": "50",
+      "cacheReadCostPerMillion": "1",
+      "cacheCreationCostPerMillion": "12.5"
+    },
+    {
+      "modelId": "claude-opus-4-7",
+      "displayName": "Claude Opus 4.7",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "25",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "6.25"
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "displayName": "Claude Opus 4.8",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "25",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "6.25"
+    },
+    {
+      "modelId": "claude-opus-5",
+      "displayName": "Claude Opus 5",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "25",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "6.25"
+    },
+    {
+      "modelId": "claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6",
+      "inputCostPerMillion": "3",
+      "outputCostPerMillion": "15",
+      "cacheReadCostPerMillion": "0.3",
+      "cacheCreationCostPerMillion": "3.75"
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "displayName": "Claude Sonnet 5",
+      "inputCostPerMillion": "2",
+      "outputCostPerMillion": "10",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "2.5"
+    },
+    {
+      "modelId": "deepseek-chat",
+      "displayName": "DeepSeek Chat",
+      "inputCostPerMillion": "0.14",
+      "outputCostPerMillion": "0.28",
+      "cacheReadCostPerMillion": "0.0028",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "deepseek-reasoner",
+      "displayName": "DeepSeek Reasoner",
+      "inputCostPerMillion": "0.14",
+      "outputCostPerMillion": "0.28",
+      "cacheReadCostPerMillion": "0.0028",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash",
+      "inputCostPerMillion": "0.14",
+      "outputCostPerMillion": "0.28",
+      "cacheReadCostPerMillion": "0.0028",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro",
+      "inputCostPerMillion": "0.435",
+      "outputCostPerMillion": "0.87",
+      "cacheReadCostPerMillion": "0.003625",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-3.1-flash-lite",
+      "displayName": "Gemini 3.1 Flash Lite",
+      "inputCostPerMillion": "0.25",
+      "outputCostPerMillion": "1.5",
+      "cacheReadCostPerMillion": "0.025",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-3.5-flash",
+      "displayName": "Gemini 3.5 Flash",
+      "inputCostPerMillion": "1.5",
+      "outputCostPerMillion": "9",
+      "cacheReadCostPerMillion": "0.15",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-3.5-flash-lite",
+      "displayName": "Gemini 3.5 Flash Lite",
+      "inputCostPerMillion": "0.3",
+      "outputCostPerMillion": "2.5",
+      "cacheReadCostPerMillion": "0.03",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-3.6-flash",
+      "displayName": "Gemini 3.6 Flash",
+      "inputCostPerMillion": "1.5",
+      "outputCostPerMillion": "7.5",
+      "cacheReadCostPerMillion": "0.15",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-flash-latest",
+      "displayName": "Gemini Flash Latest",
+      "inputCostPerMillion": "1.5",
+      "outputCostPerMillion": "9",
+      "cacheReadCostPerMillion": "0.15",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gemini-flash-lite-latest",
+      "displayName": "Gemini Flash-Lite Latest",
+      "inputCostPerMillion": "0.25",
+      "outputCostPerMillion": "1.5",
+      "cacheReadCostPerMillion": "0.025",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-4.7-flash",
+      "displayName": "GLM-4.7-Flash",
+      "inputCostPerMillion": "0",
+      "outputCostPerMillion": "0",
+      "cacheReadCostPerMillion": "0",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-5",
+      "displayName": "GLM-5",
+      "inputCostPerMillion": "1",
+      "outputCostPerMillion": "3.2",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-5-turbo",
+      "displayName": "GLM-5-Turbo",
+      "inputCostPerMillion": "1.2",
+      "outputCostPerMillion": "4",
+      "cacheReadCostPerMillion": "0.24",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-5.1",
+      "displayName": "GLM-5.1",
+      "inputCostPerMillion": "1.4",
+      "outputCostPerMillion": "4.4",
+      "cacheReadCostPerMillion": "0.26",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-5.2",
+      "displayName": "GLM-5.2",
+      "inputCostPerMillion": "1.4",
+      "outputCostPerMillion": "4.4",
+      "cacheReadCostPerMillion": "0.26",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "glm-5v-turbo",
+      "displayName": "GLM-5V-Turbo",
+      "inputCostPerMillion": "1.2",
+      "outputCostPerMillion": "4",
+      "cacheReadCostPerMillion": "0.24",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gpt-5.5",
+      "displayName": "GPT-5.5",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "30",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gpt-5.5-pro",
+      "displayName": "GPT-5.5 Pro",
+      "inputCostPerMillion": "30",
+      "outputCostPerMillion": "180",
+      "cacheReadCostPerMillion": "0",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "gpt-5.6",
+      "displayName": "GPT-5.6",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "30",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "6.25"
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "displayName": "GPT-5.6 Luna",
+      "inputCostPerMillion": "0.2",
+      "outputCostPerMillion": "1.2",
+      "cacheReadCostPerMillion": "0.02",
+      "cacheCreationCostPerMillion": "0.25"
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "displayName": "GPT-5.6 Sol",
+      "inputCostPerMillion": "5",
+      "outputCostPerMillion": "30",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "6.25"
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "displayName": "GPT-5.6 Terra",
+      "inputCostPerMillion": "2",
+      "outputCostPerMillion": "12",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "2.5"
+    },
+    {
+      "modelId": "grok-4.20-0309-non-reasoning",
+      "displayName": "Grok 4.20 (Non-Reasoning)",
+      "inputCostPerMillion": "1.25",
+      "outputCostPerMillion": "2.5",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "grok-4.20-0309-reasoning",
+      "displayName": "Grok 4.20 (Reasoning)",
+      "inputCostPerMillion": "1.25",
+      "outputCostPerMillion": "2.5",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "grok-4.3",
+      "displayName": "Grok 4.3",
+      "inputCostPerMillion": "1.25",
+      "outputCostPerMillion": "2.5",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "grok-4.5",
+      "displayName": "Grok 4.5",
+      "inputCostPerMillion": "2",
+      "outputCostPerMillion": "6",
+      "cacheReadCostPerMillion": "0.3",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "grok-4.6",
+      "displayName": "Grok 4.6",
+      "inputCostPerMillion": "2",
+      "outputCostPerMillion": "6",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "grok-build-0.1",
+      "displayName": "Grok Build 0.1",
+      "inputCostPerMillion": "1",
+      "outputCostPerMillion": "2",
+      "cacheReadCostPerMillion": "0.2",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k2-thinking",
+      "displayName": "Kimi K2 Thinking",
+      "inputCostPerMillion": "0.6",
+      "outputCostPerMillion": "2.5",
+      "cacheReadCostPerMillion": "0.15",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k2.5",
+      "displayName": "Kimi K2.5",
+      "inputCostPerMillion": "0.6",
+      "outputCostPerMillion": "3",
+      "cacheReadCostPerMillion": "0.1",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k2.6",
+      "displayName": "Kimi K2.6",
+      "inputCostPerMillion": "0.95",
+      "outputCostPerMillion": "4",
+      "cacheReadCostPerMillion": "0.16",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k2.7-code",
+      "displayName": "Kimi K2.7 Code",
+      "inputCostPerMillion": "0.95",
+      "outputCostPerMillion": "4",
+      "cacheReadCostPerMillion": "0.19",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k2.7-code-highspeed",
+      "displayName": "Kimi K2.7 Code HighSpeed",
+      "inputCostPerMillion": "1.9",
+      "outputCostPerMillion": "8",
+      "cacheReadCostPerMillion": "0.38",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "kimi-k3",
+      "displayName": "Kimi K3",
+      "inputCostPerMillion": "3",
+      "outputCostPerMillion": "15",
+      "cacheReadCostPerMillion": "0.3",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "longcat-2.0",
+      "displayName": "LongCat-2.0",
+      "inputCostPerMillion": "0.75",
+      "outputCostPerMillion": "2.95",
+      "cacheReadCostPerMillion": "0.015",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "mimo-v2.5",
+      "displayName": "MiMo-V2.5",
+      "inputCostPerMillion": "0.14",
+      "outputCostPerMillion": "0.28",
+      "cacheReadCostPerMillion": "0.0028",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "mimo-v2.5-pro",
+      "displayName": "MiMo-V2.5-Pro",
+      "inputCostPerMillion": "0.435",
+      "outputCostPerMillion": "0.87",
+      "cacheReadCostPerMillion": "0.0036",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "mimo-v2.5-pro-ultraspeed",
+      "displayName": "MiMo-V2.5-Pro-UltraSpeed",
+      "inputCostPerMillion": "1.305",
+      "outputCostPerMillion": "2.61",
+      "cacheReadCostPerMillion": "0.0108",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "minimax-m2.1",
+      "displayName": "MiniMax-M2.1",
+      "inputCostPerMillion": "0.3",
+      "outputCostPerMillion": "1.2",
+      "cacheReadCostPerMillion": "0.03",
+      "cacheCreationCostPerMillion": "0.375"
+    },
+    {
+      "modelId": "minimax-m2.5",
+      "displayName": "MiniMax-M2.5",
+      "inputCostPerMillion": "0.3",
+      "outputCostPerMillion": "1.2",
+      "cacheReadCostPerMillion": "0.03",
+      "cacheCreationCostPerMillion": "0.375"
+    },
+    {
+      "modelId": "minimax-m2.5-highspeed",
+      "displayName": "MiniMax-M2.5-highspeed",
+      "inputCostPerMillion": "0.6",
+      "outputCostPerMillion": "2.4",
+      "cacheReadCostPerMillion": "0.06",
+      "cacheCreationCostPerMillion": "0.375"
+    },
+    {
+      "modelId": "minimax-m2.7",
+      "displayName": "MiniMax-M2.7",
+      "inputCostPerMillion": "0.3",
+      "outputCostPerMillion": "1.2",
+      "cacheReadCostPerMillion": "0.06",
+      "cacheCreationCostPerMillion": "0.375"
+    },
+    {
+      "modelId": "minimax-m2.7-highspeed",
+      "displayName": "MiniMax-M2.7-highspeed",
+      "inputCostPerMillion": "0.6",
+      "outputCostPerMillion": "2.4",
+      "cacheReadCostPerMillion": "0.06",
+      "cacheCreationCostPerMillion": "0.375"
+    },
+    {
+      "modelId": "minimax-m3",
+      "displayName": "MiniMax-M3",
+      "inputCostPerMillion": "0.3",
+      "outputCostPerMillion": "1.2",
+      "cacheReadCostPerMillion": "0.06",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "qwen3.6-27b",
+      "displayName": "Qwen3.6 27B",
+      "inputCostPerMillion": "0.6",
+      "outputCostPerMillion": "3.6",
+      "cacheReadCostPerMillion": "0",
+      "cacheCreationCostPerMillion": "0"
+    },
+    {
+      "modelId": "qwen3.6-flash",
+      "displayName": "Qwen3.6 Flash",
+      "inputCostPerMillion": "0.1875",
+      "outputCostPerMillion": "1.125",
+      "cacheReadCostPerMillion": "0",
+      "cacheCreationCostPerMillion": "0.234375"
+    },
+    {
+      "modelId": "qwen3.6-max-preview",
+      "displayName": "Qwen3.6 Max Preview",
+      "inputCostPerMillion": "1.3",
+      "outputCostPerMillion": "7.8",
+      "cacheReadCostPerMillion": "0.13",
+      "cacheCreationCostPerMillion": "1.625"
+    },
+    {
+      "modelId": "qwen3.7-max",
+      "displayName": "Qwen3.7 Max",
+      "inputCostPerMillion": "2.5",
+      "outputCostPerMillion": "7.5",
+      "cacheReadCostPerMillion": "0.5",
+      "cacheCreationCostPerMillion": "3.125"
+    },
+    {
+      "modelId": "qwen3.7-plus",
+      "displayName": "Qwen3.7 Plus",
+      "inputCostPerMillion": "0.5",
+      "outputCostPerMillion": "3",
+      "cacheReadCostPerMillion": "0.05",
+      "cacheCreationCostPerMillion": "0.625"
+    },
+    {
+      "modelId": "qwen3.8-max",
+      "displayName": "Qwen3.8 Max",
+      "inputCostPerMillion": "2",
+      "outputCostPerMillion": "6",
+      "cacheReadCostPerMillion": "0.25",
+      "cacheCreationCostPerMillion": "2.5"
+    }
+  ]
+}

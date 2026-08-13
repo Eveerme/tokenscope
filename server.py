@@ -58,18 +58,37 @@ TASK_LABELS = {
 }
 
 # 示例定价（USD / 每百万 tokens）
-EXAMPLE_PRICING = {
-    "deepseek-v4-flash": {"input": 0.28, "output": 0.42, "cache_read": 0.028, "cache_write": 0.28},
-    "deepseek-chat": {"input": 0.28, "output": 0.42, "cache_read": 0.028, "cache_write": 0.28},
-    "deepseek-reasoner": {"input": 0.55, "output": 2.19, "cache_read": 0.055, "cache_write": 0.55},
-    "gpt-5.6-sol": {"input": 1.25, "output": 10.00, "cache_read": 0.125, "cache_write": 1.875},
-    "gpt-5.2": {"input": 1.25, "output": 10.00, "cache_read": 0.125, "cache_write": 1.875},
-    "gpt-4o": {"input": 2.50, "output": 10.00, "cache_read": 1.25, "cache_write": 3.75},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-opus-4-1": {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
-    "qwen3.8-max": {"input": 0.56, "output": 1.76, "cache_read": 0.056, "cache_write": 0.56},
-    "GLM-5.2": {"input": 0.60, "output": 1.80, "cache_read": 0.06, "cache_write": 0.60},
-}
+def _to_f(v):
+    """字符串/数字 → float（model-pricing.json 里的价格为字符串）"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _load_pricing_json():
+    """从内置 pricing.json 加载模型定价（以用户提供的 model-pricing.json 为准）。
+    返回 {modelId: {"input": float, "output": float, "cache_read": float, "cache_write": float}}"""
+    pricing = {}
+    path = os.path.join(BASE_DIR, "pricing.json")
+    if not os.path.isfile(path):
+        return pricing
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for m in data.get("models", []):
+            key = m.get("modelId")
+            if not key:
+                continue
+            pricing[key] = {
+                "input": _to_f(m.get("inputCostPerMillion")),
+                "output": _to_f(m.get("outputCostPerMillion")),
+                "cache_read": _to_f(m.get("cacheReadCostPerMillion")),
+                "cache_write": _to_f(m.get("cacheCreationCostPerMillion")),
+            }
+    except Exception:
+        pass
+    return pricing
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -88,9 +107,12 @@ def load_config():
             if isinstance(data, dict):
                 cfg.update(data)
             cfg.setdefault("sources", [])
-            cfg.setdefault("pricing", {})
         except Exception:
             pass
+    # 定价：以内置 pricing.json 为准（56 模型），config.json 自定义覆盖
+    pricing = _load_pricing_json()
+    pricing.update(cfg.get("pricing", {}))
+    cfg["pricing"] = pricing
     # 兼容旧配置：无 type 的源默认 hermes
     for s in cfg["sources"]:
         s.setdefault("type", "hermes")
@@ -830,9 +852,10 @@ class Handler(SimpleHTTPRequestHandler):
             save_config(cfg)
             return self._send_json({"pricing": clean})
         if path == "/api/pricing/example":
-            cfg["pricing"] = EXAMPLE_PRICING
+            base = _load_pricing_json()
+            cfg["pricing"] = base
             save_config(cfg)
-            return self._send_json({"pricing": EXAMPLE_PRICING})
+            return self._send_json({"pricing": base})
         return self._send_json({"error": "not found"}, 404)
 
     def _route_api_delete(self, path, qs):

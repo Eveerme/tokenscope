@@ -145,3 +145,16 @@ class TestSessionsAPI:
         res = server.api_sessions(cfg, {"q": ["测试"]})
         assert res["total"] == 1
         assert res["items"][0]["id"] == "s1"
+
+
+def test_load_pricing_json():
+    import os
+    p = server._load_pricing_json()
+    if os.path.isfile(os.path.join(server.BASE_DIR, "pricing.json")):
+        # pricing.json 入库后，CI/本地均应有 56 个模型（以 model-pricing.json 为准）
+        assert len(p) >= 50
+        assert p["gpt-5.6-sol"]["input"] == 5.0
+        assert p["deepseek-v4-pro"]["output"] == 0.87
+        assert p["gpt-5.5-pro"]["input"] == 30.0
+    else:
+        assert p == {}
