@@ -14,16 +14,8 @@ const toolFilter = inject(TOOL_KEY) as Ref<string>
 const loading = ref(false)
 const summary = ref<Summary | null>(null)
 const tl = ref<TimelinePoint[]>([])
-const gran = ref<'day' | 'week' | 'month' | 'hour'>('day')
-
-// 今天视图自动切到小时粒度；切出后恢复按天
-watch(
-  () => rangeState.value.key,
-  (k) => {
-    if (k === '1d') gran.value = 'hour'
-    else if (gran.value === 'hour') gran.value = 'day'
-  },
-)
+// 趋势图粒度自动：今天按小时，其他按天（不再手动切换）
+const gran = computed<'day' | 'hour'>(() => (rangeState.value.key === '1d' ? 'hour' : 'day'))
 
 // 图表容器
 const trendEl = ref<HTMLElement>()
@@ -311,12 +303,7 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
     <div class="stat-card p-5">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-[15px] font-bold text-slate-800">Token 消耗趋势</h2>
-        <el-radio-group v-model="gran" size="small">
-          <el-radio-button value="hour">按小时</el-radio-button>
-          <el-radio-button value="day">按天</el-radio-button>
-          <el-radio-button value="week">按周</el-radio-button>
-          <el-radio-button value="month">按月</el-radio-button>
-        </el-radio-group>
+        <span class="text-xs text-slate-400">{{ gran === 'hour' ? '按小时' : '按天' }}</span>
       </div>
       <div ref="trendEl" class="h-[320px] w-full" />
     </div>

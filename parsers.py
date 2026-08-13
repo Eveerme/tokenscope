@@ -275,29 +275,34 @@ def _codex_source(raw):
 
 
 def _codex_default_model():
-    """从 ~/.codex/config.toml 读取 model 作为默认模型"""
+    """从 ~/.codex/config.toml 读取 model 作为默认模型。
+
+    仅缓存成功读取到的非空值；读取失败返回空串但不缓存，下次调用重试，
+    避免启动时 config.toml 被 Codex 写占用导致永久缓存空值（模型显示"未知"）。
+    """
     global _codex_model
-    if _codex_model is not None:
+    if _codex_model:
         return _codex_model
-    _codex_model = ""
     try:
         cfg = open(os.path.expanduser("~/.codex/config.toml"), encoding="utf-8").read()
         m = re.search(r'^\s*model\s*=\s*"([^"]+)"', cfg, re.MULTILINE)
         if m:
             _codex_model = m.group(1)
+            return _codex_model
     except OSError:
         pass
-    return _codex_model
+    return ""
 
 
 def _codex_rollout_detail(path):
-    """读 rollout JSONL，取最后一个 token_count 事件的累计用量 + 事件数 + 真实来源(originator)"""
+    """读 rollout JSONL，取最后一个 token_count 事件的累计用量 + 事件数 + 真实来源(originator) + model"""
     p = _clean_win_path(path)
     try:
         with open(p, encoding="utf-8") as fh:
             last = None
             count = 0
             originator = None
+            model = None
             for line in fh:
                 try:
                     d = json.loads(line)
@@ -305,6 +310,10 @@ def _codex_rollout_detail(path):
                     continue
                 if d.get("type") == "session_meta":
                     originator = d.get("payload", {}).get("originator")
+                elif d.get("type") == "world_state":
+                    st = d.get("payload", {}).get("state", {})
+                    if isinstance(st, dict) and st.get("model"):
+                        model = st["model"]
                 elif d.get("type") == "event_msg":
                     pl = d.get("payload", {})
                     if pl.get("type") == "token_count":
@@ -316,7 +325,7 @@ def _codex_rollout_detail(path):
             # 0 消耗会话（无 token_count 事件）也要保留真实来源
             return {
                 "input": 0, "output": 0, "cache_read": 0, "reasoning": 0,
-                "calls": 0, "originator": originator,
+                "calls": 0, "originator": originator, "model": model,
             }
         return {
             "input": last.get("input_tokens") or 0,
@@ -325,6 +334,7 @@ def _codex_rollout_detail(path):
             "reasoning": last.get("reasoning_output_tokens") or 0,
             "calls": count,
             "originator": originator,
+            "model": model,
         }
     except OSError:
         return None
@@ -369,14 +379,16 @@ def parse_codex(state_db, default_model=None):
                 rsn = detail["reasoning"]
                 calls = detail["calls"]
                 src = _codex_source_from_originator(detail.get("originator")) or _codex_source(r["source"])
+                model = detail.get("model") or default_model
             else:
                 # 降级：只有总量，按输入计入
                 inp, out, cr, rsn, calls = (r["tokens_used"] or 0), 0, 0, 0, 1
                 src = _codex_source(r["source"])
+                model = default_model
             recs.append(_record(
                 "codex", id=r["id"],
                 title=r["title"] or "(无标题)",
-                model=default_model,
+                model=model,
                 cwd=_clean_win_path(r["cwd"] or ""),
                 source=src,
                 started_at=_ms_to_s(r["created_at"]),

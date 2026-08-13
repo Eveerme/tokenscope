@@ -1,4 +1,6 @@
 """四工具解析器单元测试（mock 数据）"""
+import json
+
 import parsers
 
 
@@ -152,3 +154,29 @@ class TestHelpers:
         monkeypatch.setenv('CODEX_HOME', str(home))
         found = [s for s in parsers.discover() if s['type'] == 'codex']
         assert any(os.path.normpath(s['path']) == os.path.normpath(str(db)) for s in found)
+
+    def test_rollout_detail_extracts_model(self, tmp_path):
+        # world_state 事件里的 state.model 应被提取，作为每会话真实模型
+        r = tmp_path / 'r.jsonl'
+        r.write_text(
+            json.dumps({"type": "world_state",
+                        "payload": {"state": {"model": "gpt-5.6-sol"}}}) + "\n"
+            + json.dumps({"type": "event_msg",
+                          "payload": {"type": "token_count",
+                                     "info": {"total_token_usage": {"input_tokens": 10}}}}) + "\n",
+            encoding="utf-8")
+        d = parsers._codex_rollout_detail(str(r))
+        assert d["model"] == "gpt-5.6-sol"
+        assert d["input"] == 10
+
+    def test_rollout_detail_no_model(self, tmp_path):
+        # 无 world_state 时 model 为 None（parse_codex 兜底 default_model）
+        r = tmp_path / 'r.jsonl'
+        r.write_text(
+            json.dumps({"type": "event_msg",
+                        "payload": {"type": "token_count",
+                                   "info": {"total_token_usage": {"input_tokens": 5}}}}) + "\n",
+            encoding="utf-8")
+        d = parsers._codex_rollout_detail(str(r))
+        assert d["model"] is None
+        assert d["input"] == 5
