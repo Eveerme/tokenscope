@@ -109,6 +109,27 @@ def save_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+def _resolve_db_path(p, stype):
+    """把用户填的路径解析为实际数据库文件：
+    - 直接是文件（.db/.sqlite/.sqlite3 结尾）→ 原样返回
+    - 目录 → 按工具类型找：hermes 找 state.db；codex 找 state_*.sqlite（取版本最大）；
+      zcode 找 cli/db/db.sqlite 或 db.sqlite；找不到返回 None"""
+    if p.lower().endswith((".db", ".sqlite", ".sqlite3")):
+        return p
+    if not os.path.isdir(p):
+        return None
+    if stype == "codex":
+        return parsers._latest_state_db(p)
+    if stype == "zcode":
+        for cand in ("cli/db/db.sqlite", "db.sqlite"):
+            f = os.path.join(p, cand)
+            if os.path.isfile(f):
+                return f
+        return None
+    f = os.path.join(p, "state.db")
+    return f if os.path.isfile(f) else None
+
+
 # ---------------------------------------------------------------------------
 # 统一记录层
 # ---------------------------------------------------------------------------
@@ -686,10 +707,12 @@ class Handler(SimpleHTTPRequestHandler):
                 if not os.path.isdir(p):
                     return self._send_json({"error": f"找不到目录: {p}"}, 400)
             else:
-                db_file = p if p.lower().endswith(".db") or p.lower().endswith(".sqlite") \
-                    else os.path.join(p, "state.db")
-                if not os.path.isfile(db_file):
-                    return self._send_json({"error": f"找不到数据库文件: {db_file}"}, 400)
+                db_file = _resolve_db_path(p, stype)
+                if not db_file or not os.path.isfile(db_file):
+                    hint = ("state_*.sqlite" if stype == "codex"
+                            else "cli/db/db.sqlite" if stype == "zcode" else "state.db")
+                    return self._send_json(
+                        {"error": f"找不到数据库文件: 在 {p} 下未找到 {hint}"}, 400)
                 p = db_file
             for s in cfg["sources"]:
                 if os.path.normpath(s["path"]).lower() == os.path.normpath(p).lower():

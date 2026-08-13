@@ -65,6 +65,32 @@ class TestAggregation:
         assert tl["points"][0]["date"].endswith(":00")
         assert tl["points"][0]["input"] == 1000
 
+    def test_resolve_db_path(self, tmp_path):
+        # codex 目录 → state_*.sqlite（取版本最大）
+        cx = tmp_path / 'codex'
+        cx.mkdir()
+        (cx / 'state_1.sqlite').write_text('')
+        (cx / 'state_5.sqlite').write_text('')
+        assert server._resolve_db_path(str(cx), 'codex').endswith('state_5.sqlite')
+        # zcode 目录 → cli/db/db.sqlite
+        zc = tmp_path / 'zcode'
+        (zc / 'cli' / 'db').mkdir(parents=True)
+        (zc / 'cli' / 'db' / 'db.sqlite').write_text('')
+        assert server._resolve_db_path(str(zc), 'zcode').endswith('db.sqlite')
+        # hermes 目录 → state.db
+        hm = tmp_path / 'hermes'
+        hm.mkdir()
+        (hm / 'state.db').write_text('')
+        assert server._resolve_db_path(str(hm), 'hermes').endswith('state.db')
+        # 文件路径直通
+        f = tmp_path / 'x.sqlite'
+        f.write_text('')
+        assert server._resolve_db_path(str(f), 'codex') == str(f)
+        # 空目录 → None
+        empty = tmp_path / 'empty'
+        empty.mkdir()
+        assert server._resolve_db_path(str(empty), 'codex') is None
+
     def test_by_project_merge(self, hermes_db):
         import os
         cfg = _cfg([("hermes", hermes_db)])

@@ -192,6 +192,8 @@ def invalidate_cache():
 
 def parse_hermes(db_path):
     recs = []
+    if not db_path or not os.path.isfile(db_path):
+        return recs
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -318,6 +320,8 @@ def parse_codex(state_db, default_model=None):
     recs = []
     if default_model is None:
         default_model = _codex_default_model()
+    if not state_db or not os.path.isfile(state_db):
+        return recs
     try:
         conn = sqlite3.connect(state_db)
         conn.row_factory = sqlite3.Row
@@ -388,7 +392,7 @@ def _claude_text(content):
 
 def parse_claude(projects_dir):
     recs = []
-    if not os.path.isdir(projects_dir):
+    if not projects_dir or not os.path.isdir(projects_dir):
         return recs
     for proj_name in sorted(os.listdir(projects_dir)):
         proj_path = os.path.join(projects_dir, proj_name)
@@ -452,6 +456,8 @@ def parse_claude(projects_dir):
 
 def parse_zcode(db_path):
     recs = []
+    if not db_path or not os.path.isfile(db_path):
+        return recs
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row

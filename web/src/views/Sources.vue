@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, onMounted, ref, watch, type Ref } from 'vue'
+import { computed, inject, onMounted, ref, watch, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Plus } from '@element-plus/icons-vue'
 import { api } from '../api'
@@ -44,6 +44,16 @@ const addName = ref('')
 const addPath = ref('')
 const addType = ref('hermes')
 const addSaving = ref(false)
+
+const pathLabel = computed(() => (addType.value === 'claude' ? 'Claude 项目目录（含 *.jsonl）' : '数据库路径（文件或包含它的目录）'))
+const pathPlaceholder = computed(() => {
+  switch (addType.value) {
+    case 'codex': return '例如 C:\\Users\\me\\.codex（目录自动找 state_*.sqlite）'
+    case 'zcode': return '例如 C:\\Users\\me\\.zcode（目录自动找 cli/db/db.sqlite）'
+    case 'claude': return '例如 C:\\Users\\me\\.claude\\projects'
+    default: return '例如 C:\\Users\\me\\AppData\\Local\\hermes\\state.db'
+  }
+})
 
 async function addSource() {
   const path = addPath.value.trim()
@@ -181,8 +191,8 @@ async function removeSource(s: SourceInfo) {
             <el-option v-for="o in TOOL_OPTIONS.slice(1)" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="addType === 'claude' ? 'Claude 项目目录（含 *.jsonl）' : '数据库路径（文件或包含它的目录）'">
-          <el-input v-model="addPath" :placeholder="addType === 'claude' ? '例如 C:\\Users\\me\\.claude\\projects' : '例如 C:\\Users\\me\\AppData\\Local\\hermes\\state.db'" />
+        <el-form-item :label="pathLabel">
+          <el-input v-model="addPath" :placeholder="pathPlaceholder" />
         </el-form-item>
         <el-form-item label="显示名称（可选）">
           <el-input v-model="addName" placeholder="默认取文件名" maxlength="30" />
