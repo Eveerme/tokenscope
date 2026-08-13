@@ -230,7 +230,7 @@ def parse_range(qs, default_days=None):
 # ---------------------------------------------------------------------------
 
 def _normalize_cwd(cwd):
-    """归一化工作目录：normpath + 折叠连续反斜杠（Claude 解码可能产生 D:\\\work）"""
+    r"""归一化工作目录：normpath + 折叠连续反斜杠（Claude 解码可能产生 D:\\\work）"""
     if not cwd:
         return ""
     c = os.path.normpath(cwd)
@@ -618,6 +618,85 @@ def _fmt_ts(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fmt_dur(start, end):
+    if not start:
+        return "—"
+    secs = max(0, int((end or time.time()) - start))
+    if secs < 60:
+        return f"{secs} 秒"
+    if secs < 3600:
+        return f"{secs // 60} 分 {secs % 60} 秒"
+    return f"{secs // 3600} 小时 {(secs % 3600) // 60} 分"
+
+
+def api_export_session_md(cfg, sid):
+    """导出单个会话为 Markdown 文档（元信息 + token 汇总 + 完整对话正文）"""
+    rec = None
+    for r in all_records(cfg):
+        if r.get("id") == sid:
+            rec = r
+            break
+    if rec is None:
+        return None
+    src = None
+    for s in cfg["sources"]:
+        if s.get("type") == rec.get("tool"):
+            src = s
+            break
+    msgs = parsers.extract_session_messages(src, sid) if src else []
+    return _render_session_md(rec, msgs)
+
+
+def _render_session_md(rec, msgs):
+    tool_label = parsers.TOOL_LABELS.get(rec.get("tool"), rec.get("tool") or "")
+    src_label = SOURCE_LABELS.get(rec.get("source") or "", rec.get("source") or "")
+    lines = []
+    lines.append(f"# {rec.get('title') or '(无标题)'}")
+    lines.append("")
+    lines.append(f"> **工具**：{tool_label}　**模型**：{rec.get('model') or '未知'}　**来源**：{src_label}")
+    lines.append(f"> **会话 ID**：`{rec.get('id') or ''}`")
+    lines.append(f"> **开始**：{_fmt_ts(rec.get('started_at'))}　**时长**：{_fmt_dur(rec.get('started_at'), rec.get('ended_at'))}")
+    if rec.get("cwd"):
+        lines.append(f"> **工作目录**：`{rec.get('cwd')}`")
+    lines.append("")
+    lines.append("| 指标 | 数值 |")
+    lines.append("|---|---|")
+    lines.append(f"| 输入 Tokens | {rec.get('input') or 0:,} |")
+    lines.append(f"| 输出 Tokens | {rec.get('output') or 0:,} |")
+    lines.append(f"| 缓存读取 | {rec.get('cache_read') or 0:,} |")
+    lines.append(f"| 缓存写入 | {rec.get('cache_write') or 0:,} |")
+    lines.append(f"| 推理 Tokens | {rec.get('reasoning') or 0:,} |")
+    lines.append(f"| API 调用 | {rec.get('api_calls') or 0:,} |")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## 对话内容")
+    lines.append("")
+    if not msgs:
+        lines.append("> 未提取到对话消息（该工具源可能未保存消息正文）。")
+        lines.append("")
+    role_title = {"user": "👤 用户", "assistant": "🤖 助手", "tool": "🔧 工具"}
+    for m in msgs:
+        role = m.get("role") or ""
+        title = role_title.get(role, role)
+        if role == "tool" and m.get("tool"):
+            title = f"🔧 工具：{m['tool']}"
+        lines.append(f"### {title}")
+        lines.append("")
+        if m.get("content"):
+            lines.append(m["content"])
+            lines.append("")
+        if m.get("reasoning"):
+            lines.append("<details>")
+            lines.append("<summary>💭 思考过程</summary>")
+            lines.append("")
+            lines.append(m["reasoning"])
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # HTTP 服务
 # ---------------------------------------------------------------------------
@@ -683,6 +762,20 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/pricing":
             return self._send_json({"pricing": cfg.get("pricing", {})})
+        m = re.match(r"^/api/session/(.+)/export\.md$", path)
+        if m:
+            sid = unquote(m.group(1))
+            md = api_export_session_md(cfg, sid)
+            if md is None:
+                return self._send_json({"error": "会话不存在"}, 404)
+            body = md.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="session-{sid}.md"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         m = re.match(r"^/api/session/(.+)$", path)
         if m:
             sid = unquote(m.group(1))

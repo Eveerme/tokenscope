@@ -22,6 +22,16 @@ def _make_hermes_db(path):
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("s2", "第二个", "gpt-test", "cli", "default", "/home/user/proj2",
          2, 1, 1, 100, 50, 0, 0, 0, 1700000200.0, None))
+    # messages 表（导出 MD 用）
+    conn.execute("""CREATE TABLE messages (
+        id TEXT, session_id TEXT, role TEXT, content TEXT, reasoning_content TEXT,
+        tool_name TEXT, timestamp REAL, active INTEGER)""")
+    conn.executemany(
+        "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)",
+        [("m1", "s1", "user", "你好", "", None, 1700000000.0, 1),
+         ("m2", "s1", "assistant", "你好！", "思考中", None, 1700000001.0, 1),
+         ("m3", "s1", "tool", "命令输出", "", "terminal", 1700000002.0, 1),
+         ("m4", "s1", "system", "系统提示", "", None, 1700000003.0, 1)])
     conn.commit()
     conn.close()
 
@@ -49,11 +59,22 @@ def _make_codex_dir(tmp):
         CREATE TABLE threads (
             id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER,
             source TEXT, model_provider TEXT, cwd TEXT, title TEXT, tokens_used INTEGER)""")
-    # rollout 1：正常会话（token_count 累计 + Codex Desktop）
+    # rollout 1：正常会话（token_count 累计 + Codex Desktop + 对话消息）
     r1 = tmp / "rollout1.jsonl"
-    r1.write_text(_codex_rollout("Codex Desktop", "vscode", {
-        "input_tokens": 100, "cached_input_tokens": 60,
-        "output_tokens": 20, "reasoning_output_tokens": 5}), encoding="utf-8")
+    r1.write_text(
+        _codex_rollout("Codex Desktop", "vscode", {
+            "input_tokens": 100, "cached_input_tokens": 60,
+            "output_tokens": 20, "reasoning_output_tokens": 5})
+        + json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "帮我写代码"}]}}) + "\n"
+        + json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "好的"}]}}) + "\n"
+        + json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "developer",
+            "content": [{"type": "input_text", "text": "系统指令"}]}}) + "\n",
+        encoding="utf-8")
     # rollout 2：0 消耗会话（无 token_count，只有 meta）
     r2 = tmp / "rollout2.jsonl"
     r2.write_text(_codex_rollout("Codex Desktop", "vscode"), encoding="utf-8")
@@ -84,17 +105,19 @@ def _make_claude_dir(tmp):
         json.dumps({"type": "user", "message": {"content": "你好"},
                     "timestamp": "2026-01-01T00:00:00.000Z"}, ensure_ascii=False) + "\n"
         + json.dumps({"type": "assistant",
-                      "message": {"model": "claude-x", "usage": {
-                          "input_tokens": 10, "output_tokens": 20,
-                          "cache_read_input_tokens": 30,
-                          "cache_creation_input_tokens": 40}},
-                      "timestamp": "2026-01-01T00:00:01.000Z"}) + "\n"
+                      "message": {"model": "claude-x", "content": "你好，有什么可以帮你？",
+                                  "usage": {
+                                      "input_tokens": 10, "output_tokens": 20,
+                                      "cache_read_input_tokens": 30,
+                                      "cache_creation_input_tokens": 40}},
+                      "timestamp": "2026-01-01T00:00:01.000Z"}, ensure_ascii=False) + "\n"
         + json.dumps({"type": "assistant",
-                      "message": {"model": "claude-x", "usage": {
-                          "input_tokens": 5, "output_tokens": 2,
-                          "cache_read_input_tokens": 1,
-                          "cache_creation_input_tokens": 0}},
-                      "timestamp": "2026-01-01T00:00:02.000Z"}) + "\n",
+                      "message": {"model": "claude-x", "content": "补充说明",
+                                  "usage": {
+                                      "input_tokens": 5, "output_tokens": 2,
+                                      "cache_read_input_tokens": 1,
+                                      "cache_creation_input_tokens": 0}},
+                      "timestamp": "2026-01-01T00:00:02.000Z"}, ensure_ascii=False) + "\n",
         encoding="utf-8")
     f2 = proj / "sess2.jsonl"
     f2.write_text(
@@ -122,6 +145,18 @@ def _make_zcode_db(path):
          ("z1", "GLM-X", 200, 20, 0, 0, 100, 1700000050000, 1700000090000, "completed", 1),
          ("z1", "GLM-Y", 50, 5, 0, 0, 0, 1700000090000, 1700000100000, "rate_limited", 0),
          ("z2", "GLM-X", 10, 1, 0, 0, 0, 1700000200000, 1700000200000, "completed", 1)])
+    # message + part 表（导出 MD 用；role 在 message.data 的 JSON 里）
+    conn.execute("CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, sequence INTEGER)")
+    conn.execute("CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, data TEXT, sequence INTEGER)")
+    conn.executemany(
+        "INSERT INTO message VALUES (?,?,?,?)",
+        [("msg1", "z1", json.dumps({"role": "user"}), 0),
+         ("msg2", "z1", json.dumps({"role": "assistant"}), 1)])
+    conn.executemany(
+        "INSERT INTO part VALUES (?,?,?,?,?)",
+        [("p1", "msg1", "z1", json.dumps({"type": "text", "text": "你好"}), 0),
+         ("p2", "msg2", "z1", json.dumps({"type": "text", "text": "你好！"}), 0),
+         ("p3", "msg2", "z1", json.dumps({"type": "step-start"}), 1)])
     conn.commit()
     conn.close()
 

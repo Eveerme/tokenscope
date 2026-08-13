@@ -243,9 +243,17 @@ function usageTotal(field: 'input_tokens' | 'output_tokens' | 'cache_read_tokens
     <!-- 详情抽屉 -->
     <el-drawer v-model="drawerOpen" size="560px" :with-header="true">
       <template #header>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 w-full">
           <span class="text-[15px] font-bold text-slate-800">会话详情</span>
           <el-tag size="small" type="info" v-if="d">{{ d.session.profile }}</el-tag>
+          <a
+            v-if="d"
+            :href="`/api/session/${encodeURIComponent(d.session.id)}/export.md`"
+            download
+            class="no-underline ml-auto"
+          >
+            <el-button size="small" type="primary" plain :icon="'Download'">导出 MD</el-button>
+          </a>
         </div>
       </template>
 

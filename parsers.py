@@ -542,3 +542,192 @@ def parse_zcode(db_path):
     except sqlite3.Error:
         pass
     return recs
+
+
+# ---------------------------------------------------------------------------
+# 会话对话消息提取（用于导出 MD）
+# ---------------------------------------------------------------------------
+
+def _hermes_messages(db_path, session_id):
+    """Hermes: messages 表（role/content/reasoning_content/tool_name），按 timestamp 排序"""
+    msgs = []
+    if not db_path or not os.path.isfile(db_path):
+        return msgs
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        rows = conn.execute("""
+            SELECT role, content, reasoning_content, tool_name, timestamp
+            FROM messages WHERE session_id = ? AND active = 1
+            ORDER BY timestamp, id""", (session_id,)).fetchall()
+        conn.close()
+        for r in rows:
+            role = r["role"]
+            if role in ("system", "developer"):
+                continue
+            content = (r["content"] or "").strip()
+            reasoning = (r["reasoning_content"] or "").strip()
+            if not content and not reasoning:
+                continue
+            msgs.append({"role": role, "content": content,
+                         "reasoning": reasoning, "tool": r["tool_name"] or "",
+                         "ts": r["timestamp"]})
+    except sqlite3.Error:
+        pass
+    return msgs
+
+
+def _codex_content_text(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for blk in content:
+            if isinstance(blk, dict):
+                txt = (blk.get("text") or "").strip()
+                if txt:
+                    parts.append(txt)
+        return "\n".join(parts)
+    return ""
+
+
+def _codex_messages(state_db, session_id):
+    """Codex: rollout JSONL 的 response_item 事件（message/function_call/output），按行序"""
+    msgs = []
+    if not state_db or not os.path.isfile(state_db):
+        return msgs
+    rollout_path = None
+    try:
+        conn = sqlite3.connect(state_db)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        row = conn.execute("SELECT rollout_path FROM threads WHERE id = ?", (session_id,)).fetchone()
+        conn.close()
+        if row:
+            rollout_path = row["rollout_path"]
+    except sqlite3.Error:
+        pass
+    if not rollout_path:
+        return msgs
+    rollout_path = _clean_win_path(rollout_path)
+    try:
+        with open(rollout_path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                pl = d.get("payload")
+                if not isinstance(pl, dict) or d.get("type") != "response_item":
+                    continue
+                ptype = pl.get("type")
+                if ptype == "message":
+                    role = pl.get("role") or ""
+                    if role in ("developer", "system"):
+                        continue
+                    text = _codex_content_text(pl.get("content"))
+                    if text:
+                        msgs.append({"role": role if role in ("user", "assistant") else "assistant",
+                                     "content": text, "reasoning": "", "tool": "", "ts": None})
+                elif ptype == "function_call":
+                    name = pl.get("name") or ""
+                    args = pl.get("arguments") or ""
+                    msgs.append({"role": "tool", "content": args, "reasoning": "",
+                                 "tool": name, "ts": None})
+                elif ptype == "function_call_output":
+                    out = pl.get("output") or ""
+                    msgs.append({"role": "tool", "content": out, "reasoning": "",
+                                 "tool": "输出", "ts": None})
+    except OSError:
+        pass
+    return msgs
+
+
+def _claude_messages(projects_dir, session_id):
+    """Claude: projects/<dir>/<session_id>.jsonl，逐行 user/assistant"""
+    msgs = []
+    if not projects_dir or not os.path.isdir(projects_dir):
+        return msgs
+    for proj_name in sorted(os.listdir(projects_dir)):
+        fpath = os.path.join(projects_dir, proj_name, session_id + ".jsonl")
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    t = d.get("type")
+                    if t not in ("user", "assistant"):
+                        continue
+                    content = _claude_text((d.get("message") or {}).get("content"))
+                    if not content:
+                        continue
+                    msgs.append({"role": t, "content": content, "reasoning": "",
+                                 "tool": "", "ts": _iso_to_ts(d.get("timestamp"))})
+        except OSError:
+            pass
+        break
+    return msgs
+
+
+def _zcode_messages(db_path, session_id):
+    """zcode: message 表（role+sequence）+ part 表（type=text 正文），按 seq 排序"""
+    msgs = []
+    if not db_path or not os.path.isfile(db_path):
+        return msgs
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        # role 在 message.data 的 JSON 里（message 表无 role 列）
+        roles = {}
+        for r in conn.execute("SELECT id, data, sequence FROM message WHERE session_id = ?", (session_id,)):
+            role = ""
+            try:
+                d = json.loads(r["data"]) if r["data"] else {}
+                if isinstance(d, dict):
+                    role = d.get("role") or ""
+            except (json.JSONDecodeError, TypeError):
+                pass
+            roles[r["id"]] = (role, r["sequence"] or 0)
+        rows = conn.execute("SELECT message_id, data, sequence FROM part WHERE session_id = ?",
+                            (session_id,)).fetchall()
+        conn.close()
+        for r in rows:
+            role, mseq = roles.get(r["message_id"], ("", 0))
+            if role not in ("user", "assistant"):
+                continue
+            try:
+                d = json.loads(r["data"]) if r["data"] else {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(d, dict) or d.get("type") != "text":
+                continue
+            text = (d.get("text") or "").strip()
+            if not text:
+                continue
+            msgs.append({"role": role, "content": text, "reasoning": "",
+                         "tool": "", "ts": None, "_seq": (mseq, r["sequence"] or 0)})
+        msgs.sort(key=lambda m: m.pop("_seq", (0, 0)))
+    except sqlite3.Error:
+        pass
+    return msgs
+
+
+def extract_session_messages(src, session_id):
+    """按数据源类型提取单个会话的对话消息（统一 [{role, content, reasoning, tool, ts}]）"""
+    t = src.get("type", "hermes")
+    p = src.get("path", "")
+    if t == "hermes":
+        return _hermes_messages(p, session_id)
+    if t == "codex":
+        return _codex_messages(p, session_id)
+    if t == "claude":
+        return _claude_messages(p, session_id)
+    if t == "zcode":
+        return _zcode_messages(p, session_id)
+    return []
