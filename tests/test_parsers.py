@@ -129,3 +129,26 @@ class TestHelpers:
     def test_codex_source_json_subagent(self):
         assert parsers._codex_source('{"subagent":{"thread_spawn":{}}}') == "subagent"
         assert parsers._codex_source("vscode") == "vscode"
+
+    def test_candidate_homes_env_priority(self, monkeypatch, tmp_path):
+        custom = tmp_path / 'custom_codex'
+        custom.mkdir()
+        monkeypatch.setenv('CODEX_HOME', str(custom))
+        homes = list(parsers._candidate_homes(['CODEX_HOME'], '~/.codex'))
+        assert str(custom) in homes                    # 环境变量优先
+        assert homes.index(str(custom)) == 0
+
+    def test_discover_env_codex(self, monkeypatch, tmp_path):
+        # CODEX_HOME 指向自定义目录 → discover 应自动找到其中的 state_*.sqlite
+        import os
+        import sqlite3
+        home = tmp_path / 'codex_home'
+        home.mkdir()
+        db = home / 'state_7.sqlite'
+        conn = sqlite3.connect(str(db))
+        conn.execute('CREATE TABLE threads (id TEXT)')
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv('CODEX_HOME', str(home))
+        found = [s for s in parsers.discover() if s['type'] == 'codex']
+        assert any(os.path.normpath(s['path']) == os.path.normpath(str(db)) for s in found)

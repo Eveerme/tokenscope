@@ -106,37 +106,66 @@ def _latest_state_db(home):
     return max(cands, key=ver)
 
 
+def _candidate_homes(env_names, default_sub):
+    """产出候选 home 路径（环境变量优先，其次 ~/默认子目录）；去重、过滤不存在的目录"""
+    seen = set()
+    for env in env_names:
+        v = os.environ.get(env)
+        if v:
+            v = os.path.normpath(os.path.expanduser(v))
+            if v and v not in seen:
+                seen.add(v)
+                if os.path.isdir(v):
+                    yield v
+    d = os.path.normpath(os.path.expanduser(default_sub))
+    if d and d not in seen and os.path.isdir(d):
+        seen.add(d)
+        yield d
+
+
 def discover():
-    """自动发现已安装工具的数据源: [{type, name, path}]"""
+    """自动发现已安装工具的数据源（启动时扫描，无需手动配置）"""
     out = []
+    seen_paths = set()
+
+    def add(type_, name, path):
+        if not path:
+            return
+        path = os.path.normpath(path)
+        if path in seen_paths:
+            return
+        seen_paths.add(path)
+        out.append({"type": type_, "name": name, "path": path})
+
     # --- Hermes: state.db（主实例 + profiles）---
     home = _hermes_home()
     main_db = os.path.join(home, "state.db")
     if os.path.isfile(main_db):
-        out.append({"type": "hermes", "name": "default", "path": os.path.normpath(main_db)})
+        add("hermes", "default", main_db)
     prof_dir = os.path.join(home, "profiles")
     if os.path.isdir(prof_dir):
         for name in sorted(os.listdir(prof_dir)):
             db = os.path.join(prof_dir, name, "state.db")
             if os.path.isfile(db):
-                out.append({"type": "hermes", "name": name, "path": os.path.normpath(db)})
+                add("hermes", name, db)
 
-    # --- Codex: state_*.sqlite ---
-    codex_home = os.path.expanduser("~/.codex")
-    if os.path.isdir(codex_home):
-        db = _latest_state_db(codex_home)
+    # --- Codex: state_*.sqlite（CODEX_HOME 或 ~/.codex）---
+    for h in _candidate_homes(["CODEX_HOME"], "~/.codex"):
+        db = _latest_state_db(h)
         if db:
-            out.append({"type": "codex", "name": "codex", "path": os.path.normpath(db)})
+            add("codex", "codex", db)
 
-    # --- Claude Code: projects 目录 ---
-    claude_projects = os.path.expanduser("~/.claude/projects")
-    if os.path.isdir(claude_projects):
-        out.append({"type": "claude", "name": "claude", "path": os.path.normpath(claude_projects)})
+    # --- Claude Code: projects 目录（CLAUDE_CONFIG_DIR 或 ~/.claude）---
+    for h in _candidate_homes(["CLAUDE_CONFIG_DIR"], "~/.claude"):
+        proj = os.path.join(h, "projects")
+        if os.path.isdir(proj):
+            add("claude", "claude", proj)
 
-    # --- zcode: cli/db/db.sqlite ---
-    zcode_db = os.path.expanduser("~/.zcode/cli/db/db.sqlite")
-    if os.path.isfile(zcode_db):
-        out.append({"type": "zcode", "name": "zcode", "path": os.path.normpath(zcode_db)})
+    # --- zcode: cli/db/db.sqlite（ZCODE_HOME 或 ~/.zcode）---
+    for h in _candidate_homes(["ZCODE_HOME"], "~/.zcode"):
+        db = os.path.join(h, "cli", "db", "db.sqlite")
+        if os.path.isfile(db):
+            add("zcode", "zcode", db)
 
     return out
 
