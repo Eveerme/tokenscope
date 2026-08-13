@@ -57,13 +57,28 @@ class TestAggregation:
         assert summ_all["prev_totals"] is None
 
     def test_timeline_hour(self, hermes_db):
+        from datetime import datetime
         cfg = _cfg([("hermes", hermes_db)])
-        tl = server.api_timeline(cfg, {"from": ["1700000000"], "to": ["1700000200"],
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        tl = server.api_timeline(cfg, {"from": [str(day_start.timestamp())],
                                        "granularity": ["hour"]})
         assert tl["granularity"] == "hour"
-        assert len(tl["points"]) == 1
-        assert tl["points"][0]["date"].endswith(":00")
-        assert tl["points"][0]["input"] == 1000
+        pts = tl["points"]
+        # 从当天 0 点起，每小时一桶，连续到当前小时（缺失补 0）
+        assert pts[0]["date"] == day_start.strftime("%Y-%m-%d %H:00")
+        now = datetime.now()
+        assert pts[-1]["date"] == now.strftime("%Y-%m-%d %H:00")
+        assert len(pts) == now.hour + 1
+        # hermes_db 会话是 2023 年，被今天时间过滤，所有桶为 0
+        assert all(p["input"] == 0 for p in pts)
+
+    def test_timeline_day(self, hermes_db):
+        cfg = _cfg([("hermes", hermes_db)])
+        tl = server.api_timeline(cfg, {"granularity": ["day"]})
+        assert tl["granularity"] == "day"
+        pts = tl["points"]
+        assert len(pts) == 1
+        assert pts[0]["input"] == 1100  # s1(1000) + s2(100)
 
     def test_resolve_db_path(self, tmp_path):
         # codex 目录 → state_*.sqlite（取版本最大）

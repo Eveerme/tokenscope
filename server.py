@@ -26,7 +26,7 @@ import sys
 import time
 import webbrowser
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -431,10 +431,25 @@ def api_timeline(cfg, qs):
     recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
     buckets = defaultdict(lambda: {"date": "", "input": 0, "output": 0, "cache_read": 0,
                                    "cache_write": 0, "reasoning": 0})
+    # 小时粒度：从当天 0 点起，每小时一桶，连续到当前小时（缺失时段补 0）
+    if granularity == "hour" and ts_from > 0:
+        day_start = datetime.fromtimestamp(ts_from).replace(hour=0, minute=0, second=0, microsecond=0)
+        now = datetime.now()
+        end = datetime.fromtimestamp(ts_to) if ts_to != float("inf") else now
+        if end > now:
+            end = now
+        cur = day_start
+        while cur <= end:
+            key = cur.strftime("%Y-%m-%d %H:00")
+            buckets[key] = {"date": key, "input": 0, "output": 0, "cache_read": 0,
+                            "cache_write": 0, "reasoning": 0}
+            cur += timedelta(hours=1)
     for r in recs:
         t = datetime.fromtimestamp(r["started_at"])
         if granularity == "hour":
             key = t.strftime("%Y-%m-%d %H:00")
+            if key not in buckets:
+                continue
         elif granularity == "day":
             key = t.strftime("%Y-%m-%d")
         elif granularity == "week":
