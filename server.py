@@ -517,6 +517,46 @@ def api_sessions(cfg, qs):
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
+def api_requests(cfg, qs):
+    """请求明细：各工具单次 LLM 请求（zcode/claude/codex），hermes 降级为会话×模型×任务聚合"""
+    ts_from, ts_to = parse_range(qs)
+    tool = (qs.get("tool") or [""])[0]
+    model = (qs.get("model") or [""])[0].strip()
+    pricing = cfg.get("pricing", {})
+
+    reqs = []
+    for src in cfg["sources"]:
+        if tool and src.get("type") != tool:
+            continue
+        for r in parsers.extract_requests(src):
+            st = r.get("started_at")
+            if st:
+                if st < ts_from or st >= ts_to:
+                    continue
+            elif ts_from > 0 or ts_to != float("inf"):
+                continue  # 无时间戳（codex），有时间筛选时跳过
+            if model and r.get("model") != model:
+                continue
+            r["cost"] = est_cost(r["model"], pricing, r["input"], r["output"],
+                                 r["cache_read"], r["cache_write"])
+            reqs.append(r)
+
+    reqs.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+    total = len(reqs)
+    totals = {
+        "count": total,
+        "input": sum(r["input"] for r in reqs),
+        "output": sum(r["output"] for r in reqs),
+        "cache_read": sum(r["cache_read"] for r in reqs),
+        "cost": sum(r.get("cost") or 0 for r in reqs if r.get("cost") is not None),
+    }
+    page = max(1, int((qs.get("page") or ["1"])[0]))
+    page_size = min(200, max(1, int((qs.get("page_size") or ["50"])[0])))
+    offset = (page - 1) * page_size
+    return {"total": total, "totals": totals, "page": page, "page_size": page_size,
+            "items": reqs[offset:offset + page_size]}
+
+
 def api_session_detail(cfg, sid):
     pricing = cfg.get("pricing", {})
     for r in all_records(cfg):
@@ -784,6 +824,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(api_timeline(cfg, qs))
         if path == "/api/sessions":
             return self._send_json(api_sessions(cfg, qs))
+        if path == "/api/requests":
+            return self._send_json(api_requests(cfg, qs))
         if path == "/api/models":
             return self._send_json(api_models(cfg, qs))
         if path == "/api/export.csv":

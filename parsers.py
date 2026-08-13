@@ -743,3 +743,219 @@ def extract_session_messages(src, session_id):
     if t == "zcode":
         return _zcode_messages(p, session_id)
     return []
+# ---------------------------------------------------------------------------
+# 请求级数据提取（请求明细页）
+# ---------------------------------------------------------------------------
+
+
+def _req_status(status, error):
+    """归一化请求状态：success / error / cancelled"""
+    if error:
+        return "error"
+    s = (status or "").lower()
+    if s in ("cancelled", "canceled", "cancelled_by_user"):
+        return "cancelled"
+    if s in ("error", "failed"):
+        return "error"
+    return "success"
+
+
+def _zcode_requests(db_path):
+    """zcode：model_usage 表，每行一次 LLM 请求（最完整）"""
+    reqs = []
+    if not db_path or not os.path.isfile(db_path):
+        return reqs
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        rows = conn.execute("""
+            SELECT session_id, model_id, task_type, status,
+                   started_at, duration_ms, time_to_first_token_ms, finish_reason,
+                   input_tokens, output_tokens, reasoning_tokens,
+                   cache_read_input_tokens, cache_creation_input_tokens,
+                   error_type, logical_request_id, attempt_index
+            FROM model_usage ORDER BY started_at DESC""").fetchall()
+        conn.close()
+        for r in rows:
+            reqs.append({
+                "id": f"zc-{r['logical_request_id'] or r['session_id']}-{r['attempt_index'] or 0}",
+                "tool": "zcode",
+                "session_id": r["session_id"] or "",
+                "model": r["model_id"] or "",
+                "task": r["task_type"] or "",
+                "input": r["input_tokens"] or 0,
+                "output": r["output_tokens"] or 0,
+                "reasoning": r["reasoning_tokens"] or 0,
+                "cache_read": r["cache_read_input_tokens"] or 0,
+                "cache_write": r["cache_creation_input_tokens"] or 0,
+                "duration_ms": r["duration_ms"] or 0,
+                "ttft_ms": r["time_to_first_token_ms"] or 0,
+                "status": _req_status(r["status"], r["error_type"]),
+                "finish_reason": r["finish_reason"] or "",
+                "error": r["error_type"] or "",
+                "started_at": _ms_to_s(r["started_at"]),
+            })
+    except sqlite3.Error:
+        pass
+    return reqs
+
+
+def _claude_requests(projects_dir):
+    """Claude Code：projects jsonl 每个 assistant 消息 = 一次请求"""
+    reqs = []
+    if not projects_dir or not os.path.isdir(projects_dir):
+        return reqs
+    for proj in sorted(os.listdir(projects_dir)):
+        d = os.path.join(projects_dir, proj)
+        if not os.path.isdir(d):
+            continue
+        for fname in sorted(os.listdir(d)):
+            if not fname.endswith(".jsonl"):
+                continue
+            fpath = os.path.join(d, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        try:
+                            m = json.loads(line)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+                        if m.get("type") != "assistant":
+                            continue
+                        msg = m.get("message") or {}
+                        u = msg.get("usage") or {}
+                        reqs.append({
+                            "id": m.get("uuid") or f"cl-{fname}-{len(reqs)}",
+                            "tool": "claude",
+                            "session_id": fname[:-6],
+                            "model": msg.get("model") or "",
+                            "task": "",
+                            "input": u.get("input_tokens") or 0,
+                            "output": u.get("output_tokens") or 0,
+                            "reasoning": 0,
+                            "cache_read": u.get("cache_read_input_tokens") or 0,
+                            "cache_write": u.get("cache_creation_input_tokens") or 0,
+                            "duration_ms": 0,
+                            "ttft_ms": 0,
+                            "status": "success",
+                            "finish_reason": msg.get("stop_reason") or "",
+                            "error": "",
+                            "started_at": _iso_to_ts(m.get("timestamp")),
+                        })
+            except OSError:
+                pass
+    return reqs
+
+
+def _codex_requests(state_db):
+    """Codex：rollout 的 token_count 事件的 last_token_usage = 每次请求用量（含时间戳/reasoning/cache_write）"""
+    reqs = []
+    if not state_db or not os.path.isfile(state_db):
+        return reqs
+    try:
+        conn = sqlite3.connect(state_db)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        rows = conn.execute("SELECT id, rollout_path FROM threads").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return reqs
+    for row in rows:
+        sid = row["id"]
+        rp = _clean_win_path(row["rollout_path"])
+        if not rp or not os.path.isfile(rp):
+            continue
+        try:
+            with open(rp, encoding="utf-8", errors="ignore") as fh:
+                model = None
+                idx = 0
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if d.get("type") == "world_state":
+                        st = d.get("payload", {}).get("state", {})
+                        if isinstance(st, dict) and st.get("model"):
+                            model = st["model"]
+                    elif d.get("type") == "event_msg" and d.get("payload", {}).get("type") == "token_count":
+                        lu = (d["payload"]["info"].get("last_token_usage") or {})
+                        inp = lu.get("input_tokens") or 0
+                        out = lu.get("output_tokens") or 0
+                        if inp > 0 or out > 0:
+                            reqs.append({
+                                "id": f"cx-{sid}-{idx}",
+                                "tool": "codex",
+                                "session_id": sid,
+                                "model": model or "",
+                                "task": "",
+                                "input": inp,
+                                "output": out,
+                                "reasoning": lu.get("reasoning_output_tokens") or 0,
+                                "cache_read": lu.get("cached_input_tokens") or 0,
+                                "cache_write": lu.get("cache_write_input_tokens") or 0,
+                                "duration_ms": 0,
+                                "ttft_ms": 0,
+                                "status": "success",
+                                "finish_reason": "",
+                                "error": "",
+                                "started_at": _iso_to_ts(d.get("timestamp")),
+                            })
+                            idx += 1
+        except OSError:
+            pass
+    return reqs
+
+
+def _hermes_requests(db_path):
+    """Hermes：无请求级 token，降级为「会话×模型×任务」聚合（一行 = api_call_count 次请求）"""
+    reqs = []
+    if not db_path or not os.path.isfile(db_path):
+        return reqs
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        rows = conn.execute("""
+            SELECT session_id, model, task, api_call_count,
+                   input_tokens, output_tokens, reasoning_tokens,
+                   cache_read_tokens, cache_write_tokens, first_seen
+            FROM session_model_usage ORDER BY first_seen DESC""").fetchall()
+        conn.close()
+        for r in rows:
+            reqs.append({
+                "id": f"hm-{r['session_id']}-{r['model']}-{r['task'] or 'main'}",
+                "tool": "hermes",
+                "session_id": r["session_id"] or "",
+                "model": r["model"] or "",
+                "task": r["task"] or "",
+                "input": r["input_tokens"] or 0,
+                "output": r["output_tokens"] or 0,
+                "reasoning": r["reasoning_tokens"] or 0,
+                "cache_read": r["cache_read_tokens"] or 0,
+                "cache_write": r["cache_write_tokens"] or 0,
+                "duration_ms": 0,
+                "ttft_ms": 0,
+                "status": "success",
+                "finish_reason": "",
+                "error": "",
+                "started_at": r["first_seen"] or None,
+                "api_calls": r["api_call_count"] or 0,
+            })
+    except sqlite3.Error:
+        pass
+    return reqs
+
+
+def extract_requests(src):
+    """按数据源类型提取请求记录（统一 [{id, tool, session_id, model, ...}]）"""
+    t = src.get("type", "hermes")
+    p = src.get("path", "")
+    if t == "zcode":
+        return _zcode_requests(p)
+    if t == "claude":
+        return _claude_requests(p)
+    if t == "codex":
+        return _codex_requests(p)
+    return _hermes_requests(p)

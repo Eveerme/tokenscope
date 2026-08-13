@@ -1,5 +1,5 @@
 import type {
-  ModelOption, Pricing, SessionDetail, SessionList, SourcesResp, Summary, Timeline,
+  ModelOption, Pricing, RequestList, SessionDetail, SessionList, SourcesResp, Summary, Timeline,
 } from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -69,6 +69,15 @@ export const api = {
   },
 
   sessionDetail: (id: string) => req<SessionDetail>(`/api/session/${encodeURIComponent(id)}`),
+
+  requests: (params: Record<string, string | number | null | undefined>) => {
+    const p = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null && v !== '') p.set(k, String(v))
+    }
+    const q = p.toString()
+    return req<RequestList>(`/api/requests${q ? `?${q}` : ''}`)
+  },
 
   models: (r: RangeParams = {}) => req<{ models: ModelOption[] }>(`/api/models${rangeQS(r)}`),
 

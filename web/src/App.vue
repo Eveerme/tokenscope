@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref, type ComputedRef, type Ref } from 'vue'
-import { DataAnalysis, FolderOpened, List, Refresh, Setting } from '@element-plus/icons-vue'
+import { Connection, DataAnalysis, FolderOpened, List, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api } from './api'
 import { dayStart, RANGE_PRESETS } from './format'
@@ -8,10 +8,11 @@ import type { RangeKey, RangeState } from './types'
 import { RANGE_KEY, REFRESH_KEY, TOOL_KEY, TOOL_OPTIONS } from './injectKeys'
 import Dashboard from './views/Dashboard.vue'
 import Sessions from './views/Sessions.vue'
+import Requests from './views/Requests.vue'
 import Sources from './views/Sources.vue'
 import Settings from './views/Settings.vue'
 
-type ViewKey = 'dashboard' | 'sessions' | 'sources' | 'settings'
+type ViewKey = 'dashboard' | 'sessions' | 'requests' | 'sources' | 'settings'
 
 const view = ref<ViewKey>('dashboard')
 const rangeKey = ref<RangeKey>('1d')
@@ -65,6 +66,7 @@ onMounted(() => {
 const navItems = [
   { key: 'dashboard' as ViewKey, label: '仪表盘', icon: DataAnalysis },
   { key: 'sessions' as ViewKey, label: '会话明细', icon: List },
+  { key: 'requests' as ViewKey, label: '请求明细', icon: Connection },
   { key: 'sources' as ViewKey, label: '数据源', icon: FolderOpened },
   { key: 'settings' as ViewKey, label: '定价设置', icon: Setting },
 ]
@@ -145,6 +147,7 @@ function refreshAll() {
       <section class="flex-1 overflow-y-auto p-6">
         <Dashboard v-if="mountedViews.has('dashboard')" v-show="view === 'dashboard'" />
         <Sessions v-if="mountedViews.has('sessions')" v-show="view === 'sessions'" />
+        <Requests v-if="mountedViews.has('requests')" v-show="view === 'requests'" />
         <Sources v-if="mountedViews.has('sources')" v-show="view === 'sources'" />
         <Settings v-if="mountedViews.has('settings')" v-show="view === 'settings'" />
       </section>

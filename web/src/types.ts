@@ -171,6 +171,42 @@ export interface Pricing {
   }
 }
 
+export interface RequestRecord {
+  id: string
+  tool: string
+  session_id: string
+  model: string
+  task: string
+  input: number
+  output: number
+  reasoning: number
+  cache_read: number
+  cache_write: number
+  duration_ms: number
+  ttft_ms: number
+  status: string
+  finish_reason: string
+  error: string
+  started_at: number | null
+  cost?: number | null
+  /** hermes 聚合粒度：一行代表多少次请求 */
+  api_calls?: number
+}
+
+export interface RequestList {
+  total: number
+  page: number
+  page_size: number
+  totals: {
+    count: number
+    input: number
+    output: number
+    cache_read: number
+    cost: number
+  }
+  items: RequestRecord[]
+}
+
 // ---------- 前端共享状态 ----------
 
 export type RangeKey = '1d' | '7d' | '30d' | '90d' | 'all' | 'custom'
