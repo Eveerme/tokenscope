@@ -14,7 +14,7 @@ import Settings from './views/Settings.vue'
 type ViewKey = 'dashboard' | 'sessions' | 'sources' | 'settings'
 
 const view = ref<ViewKey>('dashboard')
-const rangeKey = ref<RangeKey>('30d')
+const rangeKey = ref<RangeKey>('1d')
 const customRange = ref<[Date, Date] | null>(null)
 const refreshTick = ref(0)
 

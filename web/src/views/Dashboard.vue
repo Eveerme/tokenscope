@@ -29,13 +29,9 @@ watch(
 const trendEl = ref<HTMLElement>()
 const modelEl = ref<HTMLElement>()
 const toolEl = ref<HTMLElement>()
-const sourceEl = ref<HTMLElement>()
-const taskEl = ref<HTMLElement>()
 const trend = useChart(trendEl)
 const modelChart = useChart(modelEl)
 const toolChart = useChart(toolEl)
-const sourceChart = useChart(sourceEl)
-const taskChart = useChart(taskEl)
 
 async function load() {
   loading.value = true
@@ -74,6 +70,10 @@ const cards = computed(() => {
   const output = tot?.output ?? 0
   const cr = tot?.cache_read ?? 0
   const cacheRatio = input > 0 ? cr / input : 0
+  const cacheHitRate = (input + cr) > 0 ? (cr / (input + cr)) * 100 : null
+  const prevInput = prev.value?.input ?? 0
+  const prevCr = prev.value?.cache_read ?? 0
+  const prevHitRate = (prevInput + prevCr) > 0 ? (prevCr / (prevInput + prevCr)) * 100 : null
   return [
     {
       label: '输入 Tokens', value: fmtTokens(input), sub: `共 ${fmtNum(input)}`,
@@ -92,9 +92,11 @@ const cards = computed(() => {
       delta: deltaOf(tot?.cache_read, prev.value?.cache_read),
     },
     {
-      label: '推理 Tokens', value: fmtTokens(tot?.reasoning ?? 0),
-      sub: `共 ${fmtNum(tot?.reasoning ?? 0)}`, icon: '✦', cls: 'bg-amber-50 text-amber-600',
-      delta: deltaOf(tot?.reasoning, prev.value?.reasoning),
+      label: '缓存命中率',
+      value: cacheHitRate != null ? `${cacheHitRate.toFixed(1)}%` : '—',
+      sub: '缓存读取 ÷（输入 + 缓存读取）',
+      icon: '◎', cls: 'bg-fuchsia-50 text-fuchsia-600',
+      delta: cacheHitRate != null && prevHitRate != null ? cacheHitRate - prevHitRate : null,
     },
     {
       label: '估算成本',
@@ -114,12 +116,6 @@ const cards = computed(() => {
       label: '总 Token 消耗', value: fmtTokens((input + output + cr)),
       sub: `输入 + 输出 + 缓存读取`, icon: 'Σ', cls: 'bg-indigo-50 text-indigo-600',
       delta: deltaOf((input + output + cr), (prev.value ? prev.value.input + prev.value.output + prev.value.cache_read : null)),
-    },
-    {
-      label: '输出 / 输入比', value: input > 0 ? `${((output / input) * 100).toFixed(0)}%` : '—',
-      sub: `平均每会话 ${fmtTokens((input + output) / Math.max(1, tot?.sessions ?? 1))}`,
-      icon: '≈', cls: 'bg-teal-50 text-teal-600',
-      delta: null,
     },
   ]
 })
@@ -159,8 +155,6 @@ function renderCharts() {
   renderTrend()
   renderModel()
   renderTool()
-  renderSource()
-  renderTask()
 }
 
 function renderTrend() {
@@ -243,16 +237,6 @@ function renderTool() {
   toolChart.setOption(pieOption('工具', bt.map((s) => ({ name: s.label, value: s.input }))))
 }
 
-function renderSource() {
-  const bs = summary.value?.by_source ?? []
-  sourceChart.setOption(pieOption('来源', bs.map((s) => ({ name: s.label, value: s.input }))))
-}
-
-function renderTask() {
-  const bt = summary.value?.by_task ?? []
-  taskChart.setOption(pieOption('任务', bt.map((s) => ({ name: s.label, value: s.api_calls }))))
-}
-
 // ---------- 模型明细表 ----------
 const modelRows = computed<ModelStat[]>(() => summary.value?.by_model ?? [])
 const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [])
@@ -274,7 +258,7 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
     </div>
 
     <!-- 统计卡片 -->
-    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
       <div v-for="c in cards" :key="c.label" class="stat-card p-4">
         <div class="flex items-center gap-2 mb-2">
           <span class="w-7 h-7 rounded-lg flex items-center justify-center text-sm font-bold" :class="c.cls">
@@ -337,23 +321,15 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <div ref="trendEl" class="h-[320px] w-full" />
     </div>
 
-    <!-- 副图四宫格 -->
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+    <!-- 副图：按模型 / 按工具 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
       <div class="stat-card p-5">
         <h2 class="text-[15px] font-bold text-slate-800 mb-2">按模型</h2>
-        <div ref="modelEl" class="h-[240px] w-full" />
+        <div ref="modelEl" class="h-[280px] w-full" />
       </div>
       <div class="stat-card p-5">
         <h2 class="text-[15px] font-bold text-slate-800 mb-2">按工具</h2>
-        <div ref="toolEl" class="h-[240px] w-full" />
-      </div>
-      <div class="stat-card p-5">
-        <h2 class="text-[15px] font-bold text-slate-800 mb-2">按来源</h2>
-        <div ref="sourceEl" class="h-[240px] w-full" />
-      </div>
-      <div class="stat-card p-5">
-        <h2 class="text-[15px] font-bold text-slate-800 mb-2">按任务类型（调用次数）</h2>
-        <div ref="taskEl" class="h-[240px] w-full" />
+        <div ref="toolEl" class="h-[280px] w-full" />
       </div>
     </div>
 
