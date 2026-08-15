@@ -294,15 +294,34 @@ def _codex_default_model():
     return ""
 
 
-def _codex_rollout_detail(path):
-    """读 rollout JSONL，取最后一个 token_count 事件的累计用量 + 事件数 + 真实来源(originator) + model"""
+def _codex_rollout_start(path):
+    """从 rollout 文件名解析会话开始时间（rollout-YYYY-MM-DDTHH-MM-SS-…，本地时区）"""
+    p = _clean_win_path(path) or ""
+    m = re.search(r"rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})", p)
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6))).timestamp()
+    except ValueError:
+        return None
+
+
+def _codex_rollout_hourly(path, fallback_ts=None):
+    """读 codex rollout，按 token_count 事件把请求用量归到本地小时桶。
+
+    返回 (buckets, originator, model)：
+      buckets: {hour_ts: {input/output/cache_read/cache_write/reasoning/calls}}
+    事件无时间戳时用 fallback_ts（线程级兜底时间）归桶；
+    无任何用量时 buckets 为空（调用方按 0 消耗会话处理）；文件不可读返回 None。
+    """
     p = _clean_win_path(path)
+    buckets = {}
+    originator = None
+    model = None
+    prev_total = None
     try:
         with open(p, encoding="utf-8") as fh:
-            last = None
-            count = 0
-            originator = None
-            model = None
             for line in fh:
                 try:
                     d = json.loads(line)
@@ -316,28 +335,53 @@ def _codex_rollout_detail(path):
                         model = st["model"]
                 elif d.get("type") == "event_msg":
                     pl = d.get("payload", {})
-                    if pl.get("type") == "token_count":
-                        u = pl.get("info", {}).get("total_token_usage")
-                        if u:
-                            last = u
-                            count += 1
-        if not last:
-            # 0 消耗会话（无 token_count 事件）也要保留真实来源
-            return {
-                "input": 0, "output": 0, "cache_read": 0, "reasoning": 0,
-                "calls": 0, "originator": originator, "model": model,
-            }
-        return {
-            "input": last.get("input_tokens") or 0,
-            "output": last.get("output_tokens") or 0,
-            "cache_read": last.get("cached_input_tokens") or 0,
-            "reasoning": last.get("reasoning_output_tokens") or 0,
-            "calls": count,
-            "originator": originator,
-            "model": model,
-        }
+                    if pl.get("type") != "token_count":
+                        continue
+                    info = pl.get("info") or {}
+                    ts = _iso_to_ts(d.get("timestamp")) or fallback_ts
+                    if not ts:
+                        continue
+                    u = info.get("last_token_usage")
+                    if u:
+                        inp = u.get("input_tokens") or 0
+                        out = u.get("output_tokens") or 0
+                        cr = u.get("cached_input_tokens") or 0
+                        cw = u.get("cache_write_input_tokens") or 0
+                        rsn = u.get("reasoning_output_tokens") or 0
+                    else:
+                        # 只有累计值：用与上一次的差值近似本次请求
+                        tot = info.get("total_token_usage") or {}
+                        if prev_total is None:
+                            inp = tot.get("input_tokens") or 0
+                            out = tot.get("output_tokens") or 0
+                            cr = tot.get("cached_input_tokens") or 0
+                            cw = tot.get("cache_write_input_tokens") or 0
+                            rsn = tot.get("reasoning_output_tokens") or 0
+                        else:
+                            inp = max(0, (tot.get("input_tokens") or 0) - (prev_total.get("input_tokens") or 0))
+                            out = max(0, (tot.get("output_tokens") or 0) - (prev_total.get("output_tokens") or 0))
+                            cr = max(0, (tot.get("cached_input_tokens") or 0) - (prev_total.get("cached_input_tokens") or 0))
+                            cw = max(0, (tot.get("cache_write_input_tokens") or 0) - (prev_total.get("cache_write_input_tokens") or 0))
+                            rsn = max(0, (tot.get("reasoning_output_tokens") or 0) - (prev_total.get("reasoning_output_tokens") or 0))
+                        prev_total = tot
+                    if inp == 0 and out == 0 and cr == 0:
+                        continue
+                    hour = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0)
+                    key = int(hour.timestamp())
+                    b = buckets.get(key)
+                    if b is None:
+                        b = {"input": 0, "output": 0, "cache_read": 0,
+                             "cache_write": 0, "reasoning": 0, "calls": 0}
+                        buckets[key] = b
+                    b["input"] += inp
+                    b["output"] += out
+                    b["cache_read"] += cr
+                    b["cache_write"] += cw
+                    b["reasoning"] += rsn
+                    b["calls"] += 1
     except OSError:
         return None
+    return buckets, originator, model
 
 
 def _codex_source_from_originator(raw):
@@ -355,6 +399,10 @@ def _codex_source_from_originator(raw):
 def parse_codex(state_db, default_model=None):
     """解析 Codex 的 state_*.sqlite（threads 表）+ rollout JSONL 明细。
 
+    rollout 的 token_count 事件带真实时间戳，会话内请求按「本地小时桶」拆分
+    （与 zcode 一致，避免长会话或 threads.created_at 异常导致时间归因错误）；
+    0 消耗或无 rollout 的会话保留会话级记录。
+
     default_model: 模型名兜底；不传则读 ~/.codex/config.toml（测试/离线环境可显式传入）"""
     recs = []
     if default_model is None:
@@ -370,34 +418,50 @@ def parse_codex(state_db, default_model=None):
                    model_provider, cwd, title, tokens_used
             FROM threads""").fetchall()
         conn.close()
-        for r in rows:
-            detail = _codex_rollout_detail(r["rollout_path"])
-            if detail:
-                inp = detail["input"]
-                out = detail["output"]
-                cr = detail["cache_read"]
-                rsn = detail["reasoning"]
-                calls = detail["calls"]
-                src = _codex_source_from_originator(detail.get("originator")) or _codex_source(r["source"])
-                model = detail.get("model") or default_model
-            else:
-                # 降级：只有总量，按输入计入
-                inp, out, cr, rsn, calls = (r["tokens_used"] or 0), 0, 0, 0, 1
-                src = _codex_source(r["source"])
-                model = default_model
-            recs.append(_record(
-                "codex", id=r["id"],
-                title=r["title"] or "(无标题)",
-                model=model,
-                cwd=_clean_win_path(r["cwd"] or ""),
-                source=src,
-                started_at=_ms_to_s(r["created_at"]),
-                ended_at=_ms_to_s(r["updated_at"]),
-                input=inp, output=out, cache_read=cr, reasoning=rsn,
-                api_calls=calls, message_count=0,
-            ))
     except sqlite3.Error:
-        pass
+        return recs
+    for r in rows:
+        rid = r["id"]
+        # threads.created_at 在某些版本不可靠（如 1970），优先 rollout 文件名时间
+        fallback_ts = _codex_rollout_start(r["rollout_path"]) or _ms_to_s(r["created_at"])
+        detail = _codex_rollout_hourly(r["rollout_path"], fallback_ts)
+        if detail is not None:
+            buckets, originator, model = detail
+            src = _codex_source_from_originator(originator) or _codex_source(r["source"])
+            model = model or default_model
+            if buckets:
+                for hour_ts, b in sorted(buckets.items()):
+                    recs.append(_record(
+                        "codex", id=f"{rid}@{hour_ts}", _sid=rid,
+                        title=r["title"] or "(无标题)",
+                        model=model, cwd=_clean_win_path(r["cwd"] or ""),
+                        source=src,
+                        started_at=hour_ts, ended_at=hour_ts + 3600,
+                        input=b["input"], output=b["output"],
+                        cache_read=b["cache_read"], cache_write=b["cache_write"],
+                        reasoning=b["reasoning"],
+                        api_calls=b["calls"], message_count=0,
+                    ))
+            else:
+                # 0 消耗会话：保留会话级记录与真实来源
+                recs.append(_record(
+                    "codex", id=rid, title=r["title"] or "(无标题)",
+                    model=model, cwd=_clean_win_path(r["cwd"] or ""),
+                    source=src,
+                    started_at=fallback_ts, ended_at=_ms_to_s(r["updated_at"]),
+                    input=0, output=0, cache_read=0, cache_write=0,
+                    reasoning=0, api_calls=0, message_count=0,
+                ))
+            continue
+        # 降级：rollout 不可读 → 只有总量，按输入计入
+        recs.append(_record(
+            "codex", id=rid, title=r["title"] or "(无标题)",
+            model=default_model, cwd=_clean_win_path(r["cwd"] or ""),
+            source=_codex_source(r["source"]),
+            started_at=fallback_ts, ended_at=_ms_to_s(r["updated_at"]),
+            input=r["tokens_used"] or 0, output=0, cache_read=0, cache_write=0,
+            reasoning=0, api_calls=1, message_count=0,
+        ))
     return recs
 
 
@@ -496,6 +560,15 @@ def parse_claude(projects_dir):
 # ---------------------------------------------------------------------------
 
 def parse_zcode(db_path):
+    """zcode 会话按「本地小时桶」拆分。
+
+    长期存活的会话（可能跨数天持续请求）按请求发生时刻归入对应小时桶，
+    避免把整个会话的用量记在 MIN(started_at) 上，导致后续日期/时段
+    在趋势图与范围汇总中缺失（如"昨天下午没消耗"的假象）。
+
+    返回记录的 id = f"{session_id}@{hour_ts}"，真实会话 id 存在 _sid 字段；
+    server 层按 _sid 聚合回会话级视图（会话列表/详情/导出）。
+    """
     recs = []
     if not db_path or not os.path.isfile(db_path):
         return recs
@@ -512,44 +585,53 @@ def parse_zcode(db_path):
             sess[r["id"]] = {
                 "cwd": r["directory"] or "",
                 "title": r["title"] or "",
-                "created": r["time_created"],
                 "updated": r["time_updated"],
             }
-        # 用量聚合（请求级）
-        usage_rows = conn.execute("""
-            SELECT session_id, COUNT(*) AS calls,
-                   SUM(input_tokens) AS inp, SUM(output_tokens) AS out,
-                   SUM(reasoning_tokens) AS rsn,
-                   SUM(cache_creation_input_tokens) AS cw,
-                   SUM(cache_read_input_tokens) AS cr,
-                   MIN(started_at) AS s, MAX(completed_at) AS e
-            FROM model_usage
-            WHERE status = 'completed'
-            GROUP BY session_id""").fetchall()
-        # 每会话用量最大的模型
-        model_rows = conn.execute("""
-            SELECT session_id, model_id, SUM(input_tokens) AS tok
-            FROM model_usage
-            GROUP BY session_id, model_id
-            ORDER BY tok DESC""").fetchall()
+        # 请求级明细：按 (会话, 本地小时) 在 Python 侧聚合
+        rows = conn.execute("""
+            SELECT session_id, model_id, started_at, completed_at,
+                   input_tokens, output_tokens, reasoning_tokens,
+                   cache_creation_input_tokens, cache_read_input_tokens
+            FROM model_usage WHERE status = 'completed'""").fetchall()
         conn.close()
-        model_of = {}
-        for r in model_rows:
-            model_of.setdefault(r["session_id"], r["model_id"])
-        for r in usage_rows:
-            sid = r["session_id"]
+        buckets = {}   # (session_id, hour_ts) -> 聚合
+        for r in rows:
+            st = _ms_to_s(r["started_at"])
+            if not st:
+                continue
+            hour = datetime.fromtimestamp(st).replace(minute=0, second=0, microsecond=0)
+            key = (r["session_id"], int(hour.timestamp()))
+            b = buckets.get(key)
+            if b is None:
+                b = {
+                    "start": int(hour.timestamp()),
+                    "end": _ms_to_s(r["completed_at"]) or int(hour.timestamp()) + 3600,
+                    "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                    "reasoning": 0, "api_calls": 0, "models": {},
+                }
+                buckets[key] = b
+            b["input"] += r["input_tokens"] or 0
+            b["output"] += r["output_tokens"] or 0
+            b["reasoning"] += r["reasoning_tokens"] or 0
+            b["cache_write"] += r["cache_creation_input_tokens"] or 0
+            b["cache_read"] += r["cache_read_input_tokens"] or 0
+            b["api_calls"] += 1
+            ce = _ms_to_s(r["completed_at"])
+            if ce and ce > b["end"]:
+                b["end"] = ce
+            md = r["model_id"] or ""
+            b["models"][md] = b["models"].get(md, 0) + (r["input_tokens"] or 0)
+        for (sid, _hour), b in buckets.items():
             s = sess.get(sid, {})
+            model = max(b["models"], key=b["models"].get) if b["models"] else ""
             recs.append(_record(
-                "zcode", id=sid,
+                "zcode", id=f"{sid}@{b['start']}", _sid=sid,
                 title=s.get("title") or "(无标题)",
-                model=model_of.get(sid, ""),
-                cwd=s.get("cwd", ""), source="zcode",
-                started_at=_ms_to_s(r["s"]),
-                ended_at=_ms_to_s(r["e"] or s.get("updated")),
-                input=r["inp"] or 0, output=r["out"] or 0,
-                cache_read=r["cr"] or 0, cache_write=r["cw"] or 0,
-                reasoning=r["rsn"] or 0,
-                api_calls=r["calls"] or 0, message_count=0,
+                model=model, cwd=s.get("cwd", ""), source="zcode",
+                started_at=b["start"], ended_at=b["end"],
+                input=b["input"], output=b["output"],
+                cache_read=b["cache_read"], cache_write=b["cache_write"],
+                reasoning=b["reasoning"], api_calls=b["api_calls"], message_count=0,
             ))
     except sqlite3.Error:
         pass

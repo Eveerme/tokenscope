@@ -201,6 +201,24 @@ def record_cost(r, pricing):
                     r.get("cache_read", 0), r.get("cache_write", 0))
 
 
+def _cache_savings(r, pricing):
+    """缓存命中相比按输入原价计费节省的金额（USD）。
+    若缓存读按原输入价收费则节省为 0；模型无定价返回 None。"""
+    m = r.get("model") or ""
+    p = pricing.get(m)
+    if p is None:
+        # 大小写不敏感兜底（如 GLM-5.2 vs glm-5.2）
+        for k, v in pricing.items():
+            if k.lower() == m.lower():
+                p = v
+                break
+    if not p:
+        return None
+    cr = r.get("cache_read") or 0
+    diff = p.get("input", 0) - p.get("cache_read", 0)
+    return (cr / 1e6) * diff
+
+
 def rec_to_row(r, pricing):
     """统一记录 → 前端 SessionRow（蛇形字段）"""
     return {
@@ -269,13 +287,54 @@ def _project_key(cwd):
     return c.lower() if os.name == "nt" else c
 
 
+def _real_sid(r):
+    """记录的真实会话 id（zcode 按小时拆分后存在 _sid 字段；其余工具即 id）"""
+    return r.get("_sid") or r.get("id") or ""
+
+
+def _merge_session_records(recs):
+    """把按小时拆分过的记录（带 _sid，如 zcode）合并回会话级；
+    未拆分的记录（hermes/codex/claude）原样保留。"""
+    out = []
+    merged = {}   # real sid -> merged record
+    order = []
+    for r in recs:
+        sid = r.get("_sid")
+        if sid is None:
+            out.append(r)
+            continue
+        m = merged.get(sid)
+        if m is None:
+            m = dict(r)
+            m["id"] = sid
+            m.pop("_sid", None)
+            merged[sid] = m
+            order.append(sid)
+        else:
+            m["input"] += r.get("input") or 0
+            m["output"] += r.get("output") or 0
+            m["cache_read"] += r.get("cache_read") or 0
+            m["cache_write"] += r.get("cache_write") or 0
+            m["reasoning"] += r.get("reasoning") or 0
+            m["api_calls"] += r.get("api_calls") or 0
+            m["message_count"] += r.get("message_count") or 0
+            m["started_at"] = min(m.get("started_at") or 0, r.get("started_at") or 0)
+            m["ended_at"] = max(m.get("ended_at") or 0, r.get("ended_at") or 0)
+    for sid in order:
+        out.append(merged[sid])
+    return out
+
+
 def _totals_of(recs, pricing):
-    """对记录集合汇总 totals（独立函数，供当前窗口与上一周期对比复用）"""
+    """对记录集合汇总 totals（独立函数，供当前窗口与上一周期对比复用）。
+    会话数按真实会话 id 去重（zcode 记录已按小时拆分）。"""
     t = {"sessions": 0, "input": 0, "output": 0, "cache_read": 0,
          "cache_write": 0, "reasoning": 0, "api_calls": 0,
-         "priced_cost": 0.0, "unpriced": 0, "cost": None, "priced": False}
+         "priced_cost": 0.0, "unpriced": 0, "cost": None, "priced": False,
+         "cache_savings": 0.0}
+    seen = set()
     for r in recs:
-        t["sessions"] += 1
+        seen.add(_real_sid(r))
         t["input"] += r.get("input") or 0
         t["output"] += r.get("output") or 0
         t["cache_read"] += r.get("cache_read") or 0
@@ -288,7 +347,12 @@ def _totals_of(recs, pricing):
             t["priced"] = True
         else:
             t["unpriced"] += 1
+        cs = _cache_savings(r, pricing)
+        if cs is not None:
+            t["cache_savings"] += cs
+    t["sessions"] = len(seen)
     t["cost"] = round(t["priced_cost"], 4) if t["priced"] else None
+    t["cache_savings"] = round(t["cache_savings"], 4)
     return t
 
 
@@ -300,10 +364,12 @@ def api_summary(cfg, qs):
 
     totals = {"sessions": 0, "input": 0, "output": 0, "cache_read": 0,
               "cache_write": 0, "reasoning": 0, "api_calls": 0,
-              "priced_cost": 0.0, "unpriced": 0, "cost": None, "priced": False}
+              "priced_cost": 0.0, "unpriced": 0, "cost": None, "priced": False,
+              "cache_savings": 0.0}
     by_model = defaultdict(lambda: {"model": "", "sessions": 0, "input": 0, "output": 0,
                                     "cache_read": 0, "cache_write": 0, "reasoning": 0,
-                                    "api_calls": 0, "cost": None, "priced": False})
+                                    "api_calls": 0, "cost": None, "priced": False,
+                                    "cache_savings": 0.0})
     by_tool = defaultdict(lambda: {"key": "", "label": "", "sessions": 0, "input": 0, "output": 0,
                                    "cache_read": 0, "api_calls": 0, "cost": None})
     by_source = defaultdict(lambda: {"key": "", "label": "", "sessions": 0, "input": 0, "output": 0,
@@ -311,15 +377,27 @@ def api_summary(cfg, qs):
     by_project = defaultdict(lambda: {"key": "", "sessions": 0, "input": 0, "output": 0,
                                       "cache_read": 0, "reasoning": 0, "api_calls": 0,
                                       "cost": None, "priced": False})
+    # 各分组去重会话集（zcode 按小时拆分，sessions 按真实会话计数）
+    model_sids = defaultdict(set)
+    tool_sids = defaultdict(set)
+    source_sids = defaultdict(set)
+    project_sids = defaultdict(set)
 
     for r in recs:
         m = r.get("model") or "未知模型"
         tk = r.get("tool") or "unknown"
         sk = r.get("source") or "unknown"
+        sid = _real_sid(r)
         c = record_cost(r, pricing)
+        cs = _cache_savings(r, pricing)
+        model_sids[m].add(sid)
+        tool_sids[tk].add(sid)
+        source_sids[sk].add(sid)
+        pkey = _project_key(r.get("cwd") or "")
+        project_sids[pkey].add(sid)
+
         bm = by_model[m]
         bm["model"] = m
-        bm["sessions"] += 1
         bm["input"] += r.get("input") or 0
         bm["output"] += r.get("output") or 0
         bm["cache_read"] += r.get("cache_read") or 0
@@ -329,9 +407,10 @@ def api_summary(cfg, qs):
         if c is not None:
             bm["cost"] = (bm["cost"] or 0) + c
             bm["priced"] = True
+        if cs is not None:
+            bm["cache_savings"] += cs
 
         bt = by_tool[tk]
-        bt["sessions"] += 1
         bt["input"] += r.get("input") or 0
         bt["output"] += r.get("output") or 0
         bt["cache_read"] += r.get("cache_read") or 0
@@ -340,7 +419,6 @@ def api_summary(cfg, qs):
             bt["cost"] = (bt["cost"] or 0) + c
 
         bs = by_source[sk]
-        bs["sessions"] += 1
         bs["input"] += r.get("input") or 0
         bs["output"] += r.get("output") or 0
         bs["cache_read"] += r.get("cache_read") or 0
@@ -348,10 +426,8 @@ def api_summary(cfg, qs):
         if c is not None:
             bs["cost"] = (bs["cost"] or 0) + c
 
-        pkey = _project_key(r.get("cwd") or "")
         bp = by_project[pkey]
         bp["key"] = _normalize_cwd(r.get("cwd")) or "(未知项目)"
-        bp["sessions"] += 1
         bp["input"] += r.get("input") or 0
         bp["output"] += r.get("output") or 0
         bp["cache_read"] += r.get("cache_read") or 0
@@ -360,6 +436,16 @@ def api_summary(cfg, qs):
         if c is not None:
             bp["cost"] = (bp["cost"] or 0) + c
             bp["priced"] = True
+
+    for k, v in by_model.items():
+        v["sessions"] = len(model_sids[k])
+        v["cache_savings"] = round(v["cache_savings"], 4)
+    for k, v in by_tool.items():
+        v["sessions"] = len(tool_sids[k])
+    for k, v in by_source.items():
+        v["sessions"] = len(source_sids[k])
+    for k, v in by_project.items():
+        v["sessions"] = len(project_sids[k])
 
     totals = _totals_of(recs, pricing)
 
@@ -481,6 +567,7 @@ def api_sessions(cfg, qs):
     ts_from, ts_to = parse_range(qs)
     tool = (qs.get("tool") or [""])[0]
     recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
+    recs = _merge_session_records(recs)   # zcode 小时桶合并回会话级
     pricing = cfg.get("pricing", {})
 
     q = (qs.get("q") or [""])[0].strip().lower()
@@ -559,7 +646,9 @@ def api_requests(cfg, qs):
 
 def api_session_detail(cfg, sid):
     pricing = cfg.get("pricing", {})
-    for r in all_records(cfg):
+    recs = [r for r in all_records(cfg) if r.get("_sid") == sid or r.get("id") == sid]
+    if recs:
+        r = _merge_session_records(recs)[0]
         if r.get("id") == sid:
             row = rec_to_row(r, pricing)
             usage = []
@@ -610,6 +699,7 @@ def api_sources_full(cfg):
         p = s.get("path", "")
         t = s.get("type", "hermes")
         recs = parsers.parse_source(s)
+        recs = _merge_session_records(recs)   # 会话数按真实会话计（zcode 已按小时拆分）
         exists = os.path.isfile(p) if t != "claude" else os.path.isdir(p)
         meta = {
             "path": p, "name": s.get("name", t), "type": t,
@@ -633,12 +723,15 @@ def api_models(cfg, qs):
     tool = (qs.get("tool") or [""])[0]
     recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
     agg = defaultdict(lambda: {"sessions": 0, "api_calls": 0, "input_tokens": 0})
+    sids = defaultdict(set)
     for r in recs:
         m = r.get("model") or "未知"
+        sids[m].add(_real_sid(r))
         a = agg[m]
-        a["sessions"] += 1
         a["api_calls"] += r.get("api_calls") or 0
         a["input_tokens"] += r.get("input") or 0
+    for m, v in agg.items():
+        v["sessions"] = len(sids[m])
     return {"models": [{"model": k, **v} for k, v in
                        sorted(agg.items(), key=lambda x: x[1]["input_tokens"], reverse=True)]}
 
@@ -650,6 +743,7 @@ def api_export_csv(cfg, qs):
     ts_from, ts_to = parse_range(qs)
     tool = (qs.get("tool") or [""])[0]
     recs = filter_records(all_records(cfg), ts_from, ts_to, tool)
+    recs = _merge_session_records(recs)   # zcode 小时桶合并回会话级
     q = (qs.get("q") or [""])[0].strip().lower()
     if q:
         recs = [r for r in recs
@@ -709,10 +803,9 @@ def _fmt_dur(start, end):
 def api_export_session_md(cfg, sid):
     """导出单个会话为 Markdown 文档（元信息 + token 汇总 + 完整对话正文）"""
     rec = None
-    for r in all_records(cfg):
-        if r.get("id") == sid:
-            rec = r
-            break
+    recs = [r for r in all_records(cfg) if r.get("_sid") == sid or r.get("id") == sid]
+    if recs:
+        rec = _merge_session_records(recs)[0]
     if rec is None:
         return None
     src = None

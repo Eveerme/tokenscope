@@ -42,10 +42,14 @@ const rangeState = computed<RangeState>(() => {
     }
   }
   const preset = RANGE_PRESETS.find((p) => p.key === rangeKey.value)
+  if (!preset || preset.fromDays == null || preset.toDays == null) {
+    return { key: rangeKey.value, from: null, to: null }
+  }
   return {
     key: rangeKey.value,
-    from: preset?.days != null ? dayStart(preset.days - 1) : null,
-    to: preset?.days != null ? Math.floor(Date.now() / 1000) : null,
+    from: dayStart(preset.fromDays),
+    // toDays=0 截至此刻；toDays>=1 为对应日结束（如昨天 = 今天 0 点前 1 秒）
+    to: preset.toDays === 0 ? Math.floor(Date.now() / 1000) : dayStart(preset.toDays - 1) - 1,
   }
 })
 
@@ -78,6 +82,34 @@ function refreshAll() {
   refreshTick.value++
   ElMessage.success('已刷新数据')
   setTimeout(() => (refreshing.value = false), 600)
+}
+
+// ---------- 自定义时间快捷项 ----------
+function dayAt(offsetDays: number, endOfDay = false): Date {
+  const d = new Date()
+  d.setDate(d.getDate() - offsetDays)
+  d.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0)
+  return d
+}
+const dateShortcuts: { text: string; value: () => [Date, Date] }[] = [
+  { text: '昨天', value: () => [dayAt(1), dayAt(1, true)] },
+  { text: '最近 7 天', value: () => [dayAt(6), dayAt(0, true)] },
+  { text: '最近 30 天', value: () => [dayAt(29), dayAt(0, true)] },
+  { text: '本月', value: () => {
+    const s = new Date(); s.setDate(1); s.setHours(0, 0, 0, 0)
+    return [s, dayAt(0, true)]
+  } },
+  { text: '上月', value: () => {
+    const now = new Date()
+    const s = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const e = new Date(now.getFullYear(), now.getMonth(), 0)
+    e.setHours(23, 59, 59, 999)
+    return [s, e]
+  } },
+]
+/** 不允许选择未来日期 */
+function disabledDate(d: Date) {
+  return d.getTime() > Date.now()
 }
 </script>
 
@@ -121,7 +153,7 @@ function refreshAll() {
     <main class="flex-1 flex flex-col min-w-0">
       <header class="h-16 shrink-0 bg-white/85 backdrop-blur border-b border-[#eef1f6] flex items-center justify-between px-6 gap-4">
         <h1 class="text-lg font-bold text-slate-800 shrink-0">{{ currentTitle }}</h1>
-        <div class="flex items-center gap-3 min-w-0">
+        <div class="flex flex-wrap items-center justify-end gap-3 min-w-0">
           <el-select v-model="toolFilter" size="small" class="!w-32 shrink-0">
             <el-option v-for="o in TOOL_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
@@ -139,7 +171,9 @@ function refreshAll() {
             start-placeholder="开始日期"
             end-placeholder="结束日期"
             :clearable="false"
-            style="width: 250px"
+            :disabled-date="disabledDate"
+            :shortcuts="dateShortcuts"
+            style="width: 252px"
           />
         </div>
       </header>

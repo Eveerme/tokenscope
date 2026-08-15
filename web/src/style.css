@@ -40,6 +40,11 @@ body {
   transform: translateY(-1px);
 }
 
+/* 核心指标卡片：顶部强调条 + 轻微渐变底色 */
+.featured-stat {
+  background: linear-gradient(160deg, #f8fafd 0%, #ffffff 55%);
+}
+
 /* Element Plus 细节微调 */
 .el-card {
   --el-card-border-color: #eef1f6;

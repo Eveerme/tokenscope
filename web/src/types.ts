@@ -14,6 +14,8 @@ export interface Totals {
   /** 估算成本（有定价时为数值，否则 null） */
   cost: number | null
   priced: boolean
+  /** 缓存命中相比按输入原价计费节省的金额（USD） */
+  cache_savings: number
 }
 
 export interface ModelStat {
@@ -27,6 +29,8 @@ export interface ModelStat {
   api_calls: number
   cost: number | null
   priced: boolean
+  /** 该模型缓存命中相比按输入原价计费节省的金额（USD） */
+  cache_savings: number
 }
 
 export interface GroupStat {
@@ -209,7 +213,7 @@ export interface RequestList {
 
 // ---------- 前端共享状态 ----------
 
-export type RangeKey = '1d' | '7d' | '30d' | '90d' | 'all' | 'custom'
+export type RangeKey = '1d' | 'yesterday' | '7d' | '30d' | 'all' | 'custom'
 
 export interface RangeState {
   key: RangeKey

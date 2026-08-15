@@ -59,7 +59,7 @@ export function fmtBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`
 }
 
-/** unix 秒时间戳（当天 0 点） */
+/** unix 秒时间戳（当天 0 点，offsetDays=0 为今天，1 为昨天…） */
 export function dayStart(offsetDays: number): number {
   const d = new Date()
   d.setHours(0, 0, 0, 0)
@@ -67,10 +67,19 @@ export function dayStart(offsetDays: number): number {
   return Math.floor(d.getTime() / 1000)
 }
 
-export const RANGE_PRESETS: { key: string; label: string; days: number | null }[] = [
-  { key: '1d', label: '今天', days: 1 },
-  { key: '7d', label: '近 7 天', days: 6 },
-  { key: '30d', label: '近 30 天', days: 29 },
-  { key: '90d', label: '近 90 天', days: 89 },
-  { key: 'all', label: '全部', days: null },
+export interface RangePreset {
+  key: string
+  label: string
+  /** 起始日距今天的天数（0=今天 0 点，1=昨天 0 点…），null=不限 */
+  fromDays: number | null
+  /** 结束日距今天的天数（0=截至此刻，1=昨天 23:59:59…），null=不限 */
+  toDays: number | null
+}
+
+export const RANGE_PRESETS: RangePreset[] = [
+  { key: '1d', label: '今天', fromDays: 0, toDays: 0 },
+  { key: 'yesterday', label: '昨天', fromDays: 1, toDays: 1 },
+  { key: '7d', label: '近 7 天', fromDays: 6, toDays: 0 },
+  { key: '30d', label: '近 30 天', fromDays: 29, toDays: 0 },
+  { key: 'all', label: '全部', fromDays: null, toDays: null },
 ]

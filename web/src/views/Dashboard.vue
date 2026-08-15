@@ -14,16 +14,14 @@ const toolFilter = inject(TOOL_KEY) as Ref<string>
 const loading = ref(false)
 const summary = ref<Summary | null>(null)
 const tl = ref<TimelinePoint[]>([])
-// 趋势图粒度自动：今天按小时，其他按天（不再手动切换）
-const gran = computed<'day' | 'hour'>(() => (rangeState.value.key === '1d' ? 'hour' : 'day'))
+// 趋势图粒度自动：今天/昨天按小时，其他按天（不再手动切换）
+const gran = computed<'day' | 'hour'>(() => (['1d', 'yesterday'].includes(rangeState.value.key) ? 'hour' : 'day'))
 
 // 图表容器
 const trendEl = ref<HTMLElement>()
 const modelEl = ref<HTMLElement>()
-const toolEl = ref<HTMLElement>()
 const trend = useChart(trendEl)
 const modelChart = useChart(modelEl)
-const toolChart = useChart(toolEl)
 
 async function load() {
   loading.value = true
@@ -46,7 +44,7 @@ async function load() {
 
 watch([rangeState, gran, refreshTick, toolFilter], () => load(), { immediate: true })
 
-// ---------- 统计卡片 ----------
+// ---------- 核心指标 ----------
 const t = computed(() => summary.value?.totals)
 const prev = computed(() => summary.value?.prev_totals)
 
@@ -56,63 +54,82 @@ function deltaOf(cur: number | null | undefined, pv: number | null | undefined):
   return ((cur - pv) / pv) * 100
 }
 
+const totalTokens = computed(() => {
+  const tot = t.value
+  return (tot?.input ?? 0) + (tot?.output ?? 0) + (tot?.cache_read ?? 0)
+})
+
+const cacheHitRate = computed<number | null>(() => {
+  const tot = t.value
+  if (!tot) return null
+  const denom = (tot.input ?? 0) + (tot.cache_read ?? 0)
+  return denom > 0 ? ((tot.cache_read ?? 0) / denom) * 100 : null
+})
+
+const prevHitRate = computed<number | null>(() => {
+  const pv = prev.value
+  if (!pv) return null
+  const denom = (pv.input ?? 0) + (pv.cache_read ?? 0)
+  return denom > 0 ? ((pv.cache_read ?? 0) / denom) * 100 : null
+})
+
+const cacheSavings = computed(() => t.value?.cache_savings ?? 0)
+
+/** 命中率环比（百分点） */
+const hitDelta = computed<number | null>(() => {
+  const cur = cacheHitRate.value
+  const pv = prevHitRate.value
+  if (cur == null || pv == null) return null
+  return cur - pv
+})
+
+// 统计卡片：核心三项（总消耗 / 成本 / 缓存命中率）置前并高亮
 const cards = computed(() => {
   const tot = t.value
   const input = tot?.input ?? 0
   const output = tot?.output ?? 0
-  const cr = tot?.cache_read ?? 0
-  const cacheRatio = input > 0 ? cr / input : 0
-  const cacheHitRate = (input + cr) > 0 ? (cr / (input + cr)) * 100 : null
-  const prevInput = prev.value?.input ?? 0
-  const prevCr = prev.value?.cache_read ?? 0
-  const prevHitRate = (prevInput + prevCr) > 0 ? (prevCr / (prevInput + prevCr)) * 100 : null
+  const prevTotal = prev.value ? prev.value.input + prev.value.output + prev.value.cache_read : null
   return [
     {
-      label: '输入 Tokens', value: fmtTokens(input), sub: `共 ${fmtNum(input)}`,
-      icon: '↓', cls: 'bg-blue-50 text-blue-600',
-      delta: deltaOf(tot?.input, prev.value?.input),
-    },
-    {
-      label: '输出 Tokens', value: fmtTokens(output), sub: `共 ${fmtNum(output)}`,
-      icon: '↑', cls: 'bg-cyan-50 text-cyan-600',
-      delta: deltaOf(tot?.output, prev.value?.output),
-    },
-    {
-      label: '缓存读取', value: fmtTokens(cr),
-      sub: input > 0 ? `约为输入的 ${cacheRatio.toFixed(1)} 倍` : '无输入数据',
-      icon: '◎', cls: 'bg-violet-50 text-violet-600',
-      delta: deltaOf(tot?.cache_read, prev.value?.cache_read),
-    },
-    {
-      label: '缓存命中率',
-      value: cacheHitRate != null ? `${cacheHitRate.toFixed(1)}%` : '—',
-      sub: '缓存读取 ÷（输入 + 缓存读取）',
-      icon: '◎', cls: 'bg-fuchsia-50 text-fuchsia-600',
-      delta: cacheHitRate != null && prevHitRate != null ? cacheHitRate - prevHitRate : null,
+      label: '总 Token 消耗', value: fmtTokens(totalTokens.value), sub: '输入 + 输出 + 缓存读取',
+      icon: 'Σ', cls: 'bg-indigo-50 text-indigo-600', accent: '#6366f1', featured: true,
+      delta: deltaOf(totalTokens.value, prevTotal), deltaUnit: '%',
     },
     {
       label: '估算成本',
       value: tot?.cost != null ? fmtCost(tot.cost) : '—',
       sub: tot?.cost != null
-        ? `${tot.unpriced ? `${tot.unpriced} 个会话未定价` : '按定价表估算'}`
+        ? (tot.unpriced ? `${tot.unpriced} 个会话未定价` : '按定价表估算')
         : '未配置定价，见「定价设置」',
-      icon: '$', cls: 'bg-emerald-50 text-emerald-600',
-      delta: deltaOf(tot?.cost, prev.value?.cost),
+      icon: '$', cls: 'bg-emerald-50 text-emerald-600', accent: '#10b981', featured: true,
+      delta: deltaOf(tot?.cost, prev.value?.cost), deltaUnit: '%',
+    },
+    {
+      label: '缓存命中率',
+      value: cacheHitRate.value != null ? `${cacheHitRate.value.toFixed(1)}%` : '—',
+      sub: '缓存读取 ÷（输入 + 缓存读取）',
+      icon: '◎', cls: 'bg-fuchsia-50 text-fuchsia-600', accent: '#d946ef', featured: true,
+      delta: hitDelta.value, deltaUnit: 'pp',
+    },
+    {
+      label: '输入 Tokens', value: fmtTokens(input), sub: `共 ${fmtNum(input)}`,
+      icon: '↓', cls: 'bg-blue-50 text-blue-600',
+      delta: deltaOf(tot?.input, prev.value?.input), deltaUnit: '%',
+    },
+    {
+      label: '输出 Tokens', value: fmtTokens(output), sub: `共 ${fmtNum(output)}`,
+      icon: '↑', cls: 'bg-cyan-50 text-cyan-600',
+      delta: deltaOf(tot?.output, prev.value?.output), deltaUnit: '%',
     },
     {
       label: 'API 调用', value: fmtNum(tot?.api_calls ?? 0),
       sub: `共 ${tot?.sessions ?? 0} 个会话`, icon: '⇄', cls: 'bg-rose-50 text-rose-500',
-      delta: deltaOf(tot?.api_calls, prev.value?.api_calls),
-    },
-    {
-      label: '总 Token 消耗', value: fmtTokens((input + output + cr)),
-      sub: `输入 + 输出 + 缓存读取`, icon: 'Σ', cls: 'bg-indigo-50 text-indigo-600',
-      delta: deltaOf((input + output + cr), (prev.value ? prev.value.input + prev.value.output + prev.value.cache_read : null)),
+      delta: deltaOf(tot?.api_calls, prev.value?.api_calls), deltaUnit: '%',
     },
   ]
 })
 
-// ---------- 摘要横幅 ----------
+// ---------- 摘要横幅（聚焦核心诉求：总 token / 成本 / 缓存） ----------
 const rangeLabel = computed(() => {
   if (rangeState.value.key === 'custom') return '自定义范围'
   return RANGE_PRESETS.find((p) => p.key === rangeState.value.key)?.label ?? '全部'
@@ -121,32 +138,22 @@ const summaryText = computed(() => {
   const s = summary.value
   if (!s) return ''
   const tot = s.totals
-  const topTool = [...s.by_tool].sort((a, b) => b.input - a.input)[0]
-  const pct = tot.input > 0 && topTool ? Math.round((topTool.input / tot.input) * 100) : 0
-  const costText = tot.cost != null ? `，估算成本 ${fmtCost(tot.cost)}` : ''
-  const toolText = topTool && pct >= 3 ? `，最活跃工具 ${topTool.label}（${pct}%）` : ''
-  return `${rangeLabel.value} · ${tot.sessions} 个会话 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} · 缓存读取 ${fmtTokens(tot.cache_read)}${costText}${toolText}`
-})
-
-// ---------- 工具占比条 ----------
-const TOOL_COLORS: Record<string, string> = {
-  hermes: '#3b82f6', codex: '#8b5cf6', claude: '#f59e0b', zcode: '#06b6d4',
-}
-const toolShare = computed(() => {
-  const bt = summary.value?.by_tool ?? []
-  const total = bt.reduce((a, b) => a + b.input, 0) || 1
-  return bt.map((s) => ({
-    label: s.label, input: s.input,
-    pct: (s.input / total) * 100,
-    color: TOOL_COLORS[s.key] ?? '#94a3b8',
-  }))
+  const parts: string[] = [
+    rangeLabel.value,
+    `${tot.sessions} 个会话`,
+    `总消耗 ${fmtTokens(totalTokens.value)}`,
+  ]
+  if (tot.cost != null) parts.push(`估算成本 ${fmtCost(tot.cost)}`)
+  else parts.push('未配置定价')
+  if (cacheHitRate.value != null) parts.push(`缓存命中率 ${cacheHitRate.value.toFixed(1)}%`)
+  if (cacheSavings.value > 0) parts.push(`缓存约节省 ${fmtCost(cacheSavings.value)}`)
+  return parts.join(' · ')
 })
 
 // ---------- 图表 ----------
 function renderCharts() {
   renderTrend()
   renderModel()
-  renderTool()
 }
 
 function renderTrend() {
@@ -209,24 +216,46 @@ function renderModel() {
   modelChart.setOption(opt)
 }
 
-function pieOption(title: string, data: { name: string; value: number }[]) {
-  return {
-    tooltip: { trigger: 'item', formatter: '{b}<br/>{c}（{d}%）' },
-    legend: { bottom: 0, type: 'scroll', icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { fontSize: 11 } },
-    series: [
-      {
-        name: title, type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
-        avoidLabelOverlap: true, itemStyle: { borderRadius: 5, borderColor: '#fff', borderWidth: 2 },
-        label: { show: false }, emphasis: { label: { show: true, fontSize: 13, fontWeight: 'bold' } },
-        data,
-      },
-    ],
-  } as ChartOption
-}
+// ---------- 缓存命中率 ----------
+const RING_C = 2 * Math.PI * 50
+const ringDash = computed(() => {
+  const rate = cacheHitRate.value
+  if (rate == null) return '0 1000'
+  return `${(RING_C * rate) / 100} ${RING_C}`
+})
 
-function renderTool() {
-  const bt = summary.value?.by_tool ?? []
-  toolChart.setOption(pieOption('工具', bt.map((s) => ({ name: s.label, value: s.input }))))
+/** 命中/未命中比例条：缓存读取(命中) vs 输入(未命中) */
+const cacheBar = computed(() => {
+  const tot = t.value
+  const input = tot?.input ?? 0
+  const cr = tot?.cache_read ?? 0
+  const total = input + cr
+  if (total <= 0) return { hit: 0, miss: 0, hitPct: 0, missPct: 0 }
+  return {
+    hit: cr, miss: input,
+    hitPct: (cr / total) * 100,
+    missPct: (input / total) * 100,
+  }
+})
+
+const hitDeltaText = computed(() => {
+  const d = hitDelta.value
+  if (d == null) return '—'
+  return d >= 0 ? `▲ ${d.toFixed(1)} pp` : `▼ ${Math.abs(d).toFixed(1)} pp`
+})
+const hitDeltaCls = computed(() => {
+  const d = hitDelta.value
+  if (d == null) return 'text-slate-300'
+  return d >= 0 ? 'text-emerald-600' : 'text-rose-500'
+})
+
+function modelHitRate(m: ModelStat): number | null {
+  const denom = (m.input ?? 0) + (m.cache_read ?? 0)
+  return denom > 0 ? ((m.cache_read ?? 0) / denom) * 100 : null
+}
+function projectHitRate(p: ProjectStat): number | null {
+  const denom = (p.input ?? 0) + (p.cache_read ?? 0)
+  return denom > 0 ? ((p.cache_read ?? 0) / denom) * 100 : null
 }
 
 // ---------- 模型明细表 ----------
@@ -249,53 +278,34 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <span class="font-bold text-slate-800">📊 {{ summaryText }}</span>
     </div>
 
-    <!-- 统计卡片 -->
-    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
-      <div v-for="c in cards" :key="c.label" class="stat-card p-4">
+    <!-- 统计卡片（核心三项置前高亮） -->
+    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div
+        v-for="c in cards"
+        :key="c.label"
+        class="stat-card p-4"
+        :class="c.featured ? 'featured-stat' : ''"
+        :style="c.featured ? { borderTop: '3px solid ' + c.accent } : {}"
+      >
         <div class="flex items-center gap-2 mb-2">
           <span class="w-7 h-7 rounded-lg flex items-center justify-center text-sm font-bold" :class="c.cls">
             {{ c.icon }}
           </span>
           <span class="text-xs text-slate-500 font-medium">{{ c.label }}</span>
         </div>
-        <div class="text-[22px] leading-8 font-bold text-slate-800 tnum">{{ c.value }}</div>
+        <div class="text-[22px] leading-8 font-bold text-slate-800 tnum" :class="c.featured ? 'text-[24px]' : ''">{{ c.value }}</div>
         <div class="flex items-center gap-1.5 mt-0.5 min-h-[16px]">
           <span
             v-if="c.delta != null"
             class="text-[11px] font-semibold"
             :class="c.delta >= 0 ? 'text-emerald-500' : 'text-rose-500'"
-            :title="`较上一周期${c.delta >= 0 ? '增长' : '下降'} ${Math.abs(c.delta).toFixed(1)}%`"
+            :title="`较上一周期${c.delta >= 0 ? '增长' : '下降'} ${Math.abs(c.delta).toFixed(1)}${c.deltaUnit}`"
           >
-            {{ c.delta >= 0 ? '▲' : '▼' }} {{ Math.abs(c.delta).toFixed(1) }}%
+            {{ c.delta >= 0 ? '▲' : '▼' }} {{ Math.abs(c.delta).toFixed(1) }}{{ c.deltaUnit }}
           </span>
           <span v-else class="text-[11px] text-slate-400 truncate">{{ c.sub }}</span>
           <span v-if="c.delta != null" class="text-[10px] text-slate-300 ml-auto truncate">{{ c.sub }}</span>
         </div>
-      </div>
-    </div>
-
-    <!-- 工具占比条 -->
-    <div class="stat-card p-5" v-if="toolShare.length > 1">
-      <div class="flex items-center justify-between mb-2.5">
-        <h2 class="text-[15px] font-bold text-slate-800">工具占比</h2>
-        <span class="text-[11px] text-slate-400">按输入 tokens</span>
-      </div>
-      <div class="flex h-3.5 rounded-full overflow-hidden bg-slate-100">
-        <div
-          v-for="s in toolShare"
-          :key="s.label"
-          :style="{ width: s.pct + '%', background: s.color }"
-          :title="`${s.label} ${s.pct.toFixed(1)}%`"
-          class="transition-all"
-        />
-      </div>
-      <div class="flex flex-wrap gap-x-5 gap-y-1 mt-2.5">
-        <span v-for="s in toolShare" :key="s.label" class="flex items-center gap-1.5 text-xs text-slate-600">
-          <span class="w-2.5 h-2.5 rounded-full" :style="{ background: s.color }" />
-          {{ s.label }}
-          <b class="tnum">{{ s.pct.toFixed(1) }}%</b>
-          <span class="text-slate-400">{{ fmtTokens(s.input) }}</span>
-        </span>
       </div>
     </div>
 
@@ -308,15 +318,93 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <div ref="trendEl" class="h-[320px] w-full" />
     </div>
 
-    <!-- 副图：按模型 / 按工具 -->
+    <!-- 副图：按模型 / 缓存命中率 -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
       <div class="stat-card p-5">
         <h2 class="text-[15px] font-bold text-slate-800 mb-2">按模型</h2>
         <div ref="modelEl" class="h-[280px] w-full" />
       </div>
+
+      <!-- 缓存命中率卡片（替代原“按工具”） -->
       <div class="stat-card p-5">
-        <h2 class="text-[15px] font-bold text-slate-800 mb-2">按工具</h2>
-        <div ref="toolEl" class="h-[280px] w-full" />
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-[15px] font-bold text-slate-800">缓存命中率</h2>
+          <span class="text-[11px] text-slate-400">缓存读取 ÷（输入 + 缓存读取）</span>
+        </div>
+
+        <div class="flex items-center gap-5">
+          <div class="relative w-32 h-32 shrink-0">
+            <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+              <defs>
+                <linearGradient id="cacheRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#a855f7" />
+                  <stop offset="100%" stop-color="#ec4899" />
+                </linearGradient>
+              </defs>
+              <circle cx="60" cy="60" r="50" fill="none" stroke="#f1f5f9" stroke-width="12" />
+              <circle
+                cx="60" cy="60" r="50" fill="none" stroke="url(#cacheRingGrad)" stroke-width="12"
+                stroke-linecap="round"
+                :stroke-dasharray="ringDash"
+              />
+            </svg>
+            <div class="absolute inset-0 flex flex-col items-center justify-center">
+              <div class="text-[24px] leading-7 font-bold text-slate-800 tnum">
+                {{ cacheHitRate != null ? cacheHitRate.toFixed(1) + '%' : '—' }}
+              </div>
+              <div class="text-[11px] text-slate-400">命中率</div>
+            </div>
+          </div>
+
+          <div class="flex-1 grid grid-cols-2 gap-x-4 gap-y-3 min-w-0">
+            <div>
+              <div class="text-[11px] text-slate-400">缓存读取</div>
+              <div class="text-[16px] font-bold text-slate-800 tnum">{{ fmtTokens(t?.cache_read ?? 0) }}</div>
+              <div class="text-[11px] text-slate-400 truncate">{{ fmtNum(t?.cache_read ?? 0) }} tokens</div>
+            </div>
+            <div>
+              <div class="text-[11px] text-slate-400">缓存写入</div>
+              <div class="text-[16px] font-bold text-slate-800 tnum">{{ fmtTokens(t?.cache_write ?? 0) }}</div>
+              <div class="text-[11px] text-slate-400 truncate">{{ fmtNum(t?.cache_write ?? 0) }} tokens</div>
+            </div>
+            <div>
+              <div class="text-[11px] text-slate-400">约节省成本</div>
+              <div class="text-[16px] font-bold text-emerald-600 tnum">{{ fmtCost(cacheSavings) }}</div>
+              <div class="text-[11px] text-slate-400 truncate" title="按「输入价 − 缓存价」估算">按输入价 − 缓存价估算</div>
+            </div>
+            <div>
+              <div class="text-[11px] text-slate-400">较上一周期</div>
+              <div class="text-[16px] font-bold tnum" :class="hitDeltaCls">{{ hitDeltaText }}</div>
+              <div class="text-[11px] text-slate-400 truncate">{{ rangeLabel }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 命中 / 未命中比例条 -->
+        <div class="mt-4">
+          <div class="flex h-2.5 rounded-full overflow-hidden bg-slate-100">
+            <div
+              class="bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all"
+              :style="{ width: cacheBar.hitPct + '%' }"
+              :title="`缓存命中 ${fmtTokens(cacheBar.hit)}（${cacheBar.hitPct.toFixed(1)}%）`"
+            />
+            <div
+              class="bg-blue-200 transition-all"
+              :style="{ width: cacheBar.missPct + '%' }"
+              :title="`未命中输入 ${fmtTokens(cacheBar.miss)}（${cacheBar.missPct.toFixed(1)}%）`"
+            />
+          </div>
+          <div class="flex justify-between mt-1.5 text-[11px] text-slate-500">
+            <span class="flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-fuchsia-500" /> 命中 {{ fmtTokens(cacheBar.hit) }}
+              <b class="text-slate-700 tnum">{{ cacheBar.hitPct.toFixed(1) }}%</b>
+            </span>
+            <span class="flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-blue-300" /> 未命中 {{ fmtTokens(cacheBar.miss) }}
+              <b class="text-slate-700 tnum">{{ cacheBar.missPct.toFixed(1) }}%</b>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -324,22 +412,36 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
     <div class="stat-card p-5">
       <h2 class="text-[15px] font-bold text-slate-800 mb-3">模型明细</h2>
       <el-table :data="modelRows" size="small">
-        <el-table-column prop="model" label="模型" min-width="180" />
-        <el-table-column prop="sessions" label="会话数" align="right" width="90" />
-        <el-table-column prop="api_calls" label="调用次数" align="right" width="100" />
-        <el-table-column label="输入" align="right" width="110">
+        <el-table-column prop="model" label="模型" min-width="170" />
+        <el-table-column prop="sessions" label="会话数" align="right" width="80" />
+        <el-table-column prop="api_calls" label="调用次数" align="right" width="90" />
+        <el-table-column label="输入" align="right" width="100">
           <template #default="{ row }">{{ fmtTokens(row.input) }}</template>
         </el-table-column>
-        <el-table-column label="输出" align="right" width="110">
+        <el-table-column label="输出" align="right" width="100">
           <template #default="{ row }">{{ fmtTokens(row.output) }}</template>
         </el-table-column>
-        <el-table-column label="缓存读取" align="right" width="120">
+        <el-table-column label="缓存读取" align="right" width="110">
           <template #default="{ row }">{{ fmtTokens(row.cache_read) }}</template>
         </el-table-column>
-        <el-table-column label="推理" align="right" width="100">
+        <el-table-column label="缓存命中率" align="right" width="105">
+          <template #default="{ row }">
+            <span :class="modelHitRate(row) != null ? 'text-violet-600 font-medium' : 'text-slate-300'">
+              {{ modelHitRate(row) != null ? modelHitRate(row)!.toFixed(1) + '%' : '—' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="缓存节省" align="right" width="100">
+          <template #default="{ row }">
+            <span :class="row.cache_savings > 0 ? 'text-emerald-600' : 'text-slate-300'">
+              {{ fmtCost(row.cache_savings) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="推理" align="right" width="90">
           <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
         </el-table-column>
-        <el-table-column label="估算成本" align="right" width="110">
+        <el-table-column label="估算成本" align="right" width="100">
           <template #default="{ row }">
             <span :class="row.cost != null ? '' : 'text-slate-300'" :title="row.cost != null ? '' : '该模型未配置定价'">
               {{ fmtCost(row.cost) }}
@@ -356,26 +458,33 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
         <span class="text-[11px] text-slate-400">共 {{ projectRows.length }} 个项目</span>
       </div>
       <el-table :data="projectRows" size="small">
-        <el-table-column prop="key" label="项目路径" min-width="280" show-overflow-tooltip>
+        <el-table-column prop="key" label="项目路径" min-width="270" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="font-mono text-[12px]">{{ row.key }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="sessions" label="会话数" align="right" width="90" />
-        <el-table-column prop="api_calls" label="调用次数" align="right" width="100" />
-        <el-table-column label="输入" align="right" width="110">
+        <el-table-column prop="sessions" label="会话数" align="right" width="80" />
+        <el-table-column prop="api_calls" label="调用次数" align="right" width="90" />
+        <el-table-column label="输入" align="right" width="100">
           <template #default="{ row }">{{ fmtTokens(row.input) }}</template>
         </el-table-column>
-        <el-table-column label="输出" align="right" width="110">
+        <el-table-column label="输出" align="right" width="100">
           <template #default="{ row }">{{ fmtTokens(row.output) }}</template>
         </el-table-column>
-        <el-table-column label="缓存读取" align="right" width="120">
+        <el-table-column label="缓存读取" align="right" width="110">
           <template #default="{ row }">{{ fmtTokens(row.cache_read) }}</template>
         </el-table-column>
-        <el-table-column label="推理" align="right" width="100">
+        <el-table-column label="缓存命中率" align="right" width="105">
+          <template #default="{ row }">
+            <span :class="projectHitRate(row) != null ? 'text-violet-600 font-medium' : 'text-slate-300'">
+              {{ projectHitRate(row) != null ? projectHitRate(row)!.toFixed(1) + '%' : '—' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="推理" align="right" width="90">
           <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
         </el-table-column>
-        <el-table-column label="估算成本" align="right" width="110">
+        <el-table-column label="估算成本" align="right" width="100">
           <template #default="{ row }">{{ fmtCost(row.cost) }}</template>
         </el-table-column>
       </el-table>
