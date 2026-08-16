@@ -496,6 +496,15 @@ def _claude_text(content):
 
 
 def parse_claude(projects_dir):
+    """Claude Code：projects jsonl 会话按「本地小时桶」拆分。
+
+    Claude Code 的 Task/子代理会写在 <proj>/<session_id>/subagents/*.jsonl 里，
+    这些子代理会话的用量一并归入父会话统计（真实会话 id 为 _sid）；
+    所有 assistant 消息的用量按消息时间戳归到对应小时桶，避免长会话
+    用量堆在会话开始时刻（与 zcode/codex 一致）。
+
+    返回记录 id = f"{session_id}@{hour_ts}"，真实会话 id 存在 _sid 字段；
+    0 消耗会话保留会话级记录。"""
     recs = []
     if not projects_dir or not os.path.isdir(projects_dir):
         return recs
@@ -504,54 +513,95 @@ def parse_claude(projects_dir):
         if not os.path.isdir(proj_path):
             continue
         cwd = _decode_claude_project(proj_name)
-        for fname in os.listdir(proj_path):
-            if not fname.endswith(".jsonl"):
+        # 收集 (sid -> [jsonl 路径])：主会话文件 + 会话目录下的 subagents/*.jsonl
+        files = {}
+        for fname in sorted(os.listdir(proj_path)):
+            if fname.endswith(".jsonl"):
+                files.setdefault(fname[:-6], []).append(os.path.join(proj_path, fname))
+        for dname in sorted(os.listdir(proj_path)):
+            sub = os.path.join(proj_path, dname, "subagents")
+            if not os.path.isdir(sub):
                 continue
-            fpath = os.path.join(proj_path, fname)
-            session_id = fname[:-6]
+            for fname in sorted(os.listdir(sub)):
+                if fname.endswith(".jsonl"):
+                    files.setdefault(dname, []).append(os.path.join(sub, fname))
+        for sid, flist in files.items():
+            buckets = {}   # hour_ts -> {input, output, cache_read, cache_write, calls, msgs, models}
+            hour_msgs = {}   # hour_ts -> 该小时内的全部消息数
             title = ""
             model = ""
             started = ended = None
-            inp = out = cr = cw = rsn = calls = msgs = 0
-            try:
-                with open(fpath, encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
-                        try:
-                            d = json.loads(line)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            continue
-                        t = d.get("type")
-                        ts = _iso_to_ts(d.get("timestamp"))
-                        if started is None and ts:
-                            started = ts
-                        if ts:
-                            ended = ts
-                        if t == "assistant":
-                            msg = d.get("message") or {}
-                            u = msg.get("usage") or {}
-                            inp += u.get("input_tokens") or 0
-                            out += u.get("output_tokens") or 0
-                            cr += u.get("cache_read_input_tokens") or 0
-                            cw += u.get("cache_creation_input_tokens") or 0
-                            calls += 1
-                            if not model and msg.get("model"):
-                                model = msg["model"]
-                        elif t == "user" and not title:
-                            txt = _claude_text(d.get("message", {}).get("content"))
-                            if txt:
-                                title = txt[:60]
-                            else:
-                                title = "(无标题)"
-                        msgs += 1
-            except OSError:
-                continue
-            recs.append(_record(
-                "claude", id=session_id, title=title or "(无标题)",
-                model=model, cwd=cwd, source="claude",
-                started_at=started, ended_at=ended,
-                input=inp, output=out, cache_read=cr, cache_write=cw,
-                reasoning=rsn, api_calls=calls, message_count=msgs,
-            ))
+            last_ts = None
+            msgs_total = 0
+            for fpath in flist:
+                try:
+                    with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            try:
+                                d = json.loads(line)
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                continue
+                            t = d.get("type")
+                            ts = _iso_to_ts(d.get("timestamp")) or last_ts
+                            if started is None and ts:
+                                started = ts
+                            if ts:
+                                ended = ts
+                                last_ts = ts
+                                hkey = int(datetime.fromtimestamp(ts).replace(
+                                    minute=0, second=0, microsecond=0).timestamp())
+                                hour_msgs[hkey] = hour_msgs.get(hkey, 0) + 1
+                            if t == "assistant":
+                                msg = d.get("message") or {}
+                                u = msg.get("usage") or {}
+                                inp = u.get("input_tokens") or 0
+                                out = u.get("output_tokens") or 0
+                                cr = u.get("cache_read_input_tokens") or 0
+                                cw = u.get("cache_creation_input_tokens") or 0
+                                if (inp or out or cr or cw) and ts:
+                                    key = int(datetime.fromtimestamp(ts).replace(
+                                        minute=0, second=0, microsecond=0).timestamp())
+                                    b = buckets.get(key)
+                                    if b is None:
+                                        b = {"input": 0, "output": 0, "cache_read": 0,
+                                             "cache_write": 0, "calls": 0, "msgs": 0, "models": {}}
+                                        buckets[key] = b
+                                    b["input"] += inp
+                                    b["output"] += out
+                                    b["cache_read"] += cr
+                                    b["cache_write"] += cw
+                                    b["calls"] += 1
+                                    md = msg.get("model") or ""
+                                    b["models"][md] = b["models"].get(md, 0) + inp
+                                if not model and msg.get("model"):
+                                    model = msg["model"]
+                            elif t == "user" and not title:
+                                txt = _claude_text(d.get("message", {}).get("content"))
+                                title = txt[:60] if txt else "(无标题)"
+                            msgs_total += 1
+                except OSError:
+                    continue
+            if buckets:
+                for hour_ts, b in sorted(buckets.items()):
+                    b["msgs"] = hour_msgs.get(hour_ts, 0)
+                    bmodel = max(b["models"], key=b["models"].get) if b["models"] else model
+                    recs.append(_record(
+                        "claude", id=f"{sid}@{hour_ts}", _sid=sid,
+                        title=title or "(无标题)", model=bmodel, cwd=cwd, source="claude",
+                        started_at=hour_ts, ended_at=hour_ts + 3600,
+                        input=b["input"], output=b["output"],
+                        cache_read=b["cache_read"], cache_write=b["cache_write"],
+                        reasoning=0, api_calls=b["calls"], message_count=b["msgs"],
+                    ))
+            else:
+                # 0 消耗会话：保留会话级记录
+                recs.append(_record(
+                    "claude", id=sid, title=title or "(无标题)", model=model,
+                    cwd=cwd, source="claude",
+                    started_at=started, ended_at=ended,
+                    input=0, output=0, cache_read=0, cache_write=0,
+                    reasoning=0, api_calls=0, message_count=msgs_total,
+                ))
     return recs
 
 
@@ -884,7 +934,7 @@ def _zcode_requests(db_path):
 
 
 def _claude_requests(projects_dir):
-    """Claude Code：projects jsonl 每个 assistant 消息 = 一次请求"""
+    """Claude Code：projects jsonl 每个 assistant 消息 = 一次请求（含 subagents 子代理，归入父会话）"""
     reqs = []
     if not projects_dir or not os.path.isdir(projects_dir):
         return reqs
@@ -892,10 +942,17 @@ def _claude_requests(projects_dir):
         d = os.path.join(projects_dir, proj)
         if not os.path.isdir(d):
             continue
+        files = []
         for fname in sorted(os.listdir(d)):
-            if not fname.endswith(".jsonl"):
-                continue
-            fpath = os.path.join(d, fname)
+            if fname.endswith(".jsonl"):
+                files.append((fname[:-6], fname, os.path.join(d, fname)))
+        for dname in sorted(os.listdir(d)):
+            sub = os.path.join(d, dname, "subagents")
+            if os.path.isdir(sub):
+                for fname in sorted(os.listdir(sub)):
+                    if fname.endswith(".jsonl"):
+                        files.append((dname, fname, os.path.join(sub, fname)))
+        for sid, fname, fpath in files:
             try:
                 with open(fpath, encoding="utf-8", errors="ignore") as fh:
                     for line in fh:
@@ -910,7 +967,7 @@ def _claude_requests(projects_dir):
                         reqs.append({
                             "id": m.get("uuid") or f"cl-{fname}-{len(reqs)}",
                             "tool": "claude",
-                            "session_id": fname[:-6],
+                            "session_id": sid,
                             "model": msg.get("model") or "",
                             "task": "",
                             "input": u.get("input_tokens") or 0,

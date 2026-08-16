@@ -115,6 +115,45 @@ class TestClaude:
         assert r["api_calls"] == 0
         assert r["input"] == 0
 
+    def test_subagents_included(self, tmp_path):
+        """subagents/ 目录下的子代理会话用量应归入父会话（_sid 一致）"""
+        import datetime as dt
+        proj = tmp_path / "projects" / "D--work-AI-Proj"
+        sub = proj / "sess1" / "subagents"
+        sub.mkdir(parents=True)
+        (sub / "agent-abc.jsonl").write_text(
+            json.dumps({"type": "assistant",
+                        "message": {"model": "claude-x", "content": "x",
+                                    "usage": {"input_tokens": 100, "output_tokens": 5,
+                                              "cache_read_input_tokens": 90}},
+                        "timestamp": "2026-01-01T00:00:05.000Z"}) + "\n",
+            encoding="utf-8")
+        recs = parsers.parse_claude(str(tmp_path / "projects"))
+        sess_recs = [r for r in recs if r.get("_sid") == "sess1"]
+        assert len(sess_recs) == 1                    # 同一小时合并为一桶
+        assert sess_recs[0]["input"] == 100
+        assert sess_recs[0]["output"] == 5
+        assert sess_recs[0]["cache_read"] == 90
+        assert sess_recs[0]["id"].startswith("sess1@")
+
+    def test_hour_split(self, tmp_path):
+        """长会话跨小时：用量按消息时间戳归到不同小时桶"""
+        proj = tmp_path / "projects" / "D--work-AI-Proj"
+        proj.mkdir(parents=True)
+        (proj / "s1.jsonl").write_text("\n".join([
+            json.dumps({"type": "assistant",
+                        "message": {"model": "m", "usage": {"input_tokens": 100}},
+                        "timestamp": "2026-01-01T10:00:00.000Z"}),
+            json.dumps({"type": "assistant",
+                        "message": {"model": "m", "usage": {"input_tokens": 200}},
+                        "timestamp": "2026-01-01T11:00:00.000Z"}),
+        ]) + "\n", encoding="utf-8")
+        recs = parsers.parse_claude(str(tmp_path / "projects"))
+        assert len(recs) == 2
+        assert len({r["started_at"] for r in recs}) == 2
+        assert sum(r["input"] for r in recs) == 300
+        assert all(r.get("_sid") == "s1" for r in recs)
+
 
 class TestZcode:
     def test_aggregate(self, zcode_db):
