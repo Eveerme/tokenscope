@@ -179,11 +179,11 @@ function disabledDate(d: Date) {
       </header>
 
       <section class="flex-1 overflow-y-auto p-6">
-        <Dashboard v-if="mountedViews.has('dashboard')" v-show="view === 'dashboard'" />
-        <Sessions v-if="mountedViews.has('sessions')" v-show="view === 'sessions'" />
-        <Requests v-if="mountedViews.has('requests')" v-show="view === 'requests'" />
-        <Sources v-if="mountedViews.has('sources')" v-show="view === 'sources'" />
-        <Settings v-if="mountedViews.has('settings')" v-show="view === 'settings'" />
+        <Dashboard v-if="mountedViews.has('dashboard')" v-show="view === 'dashboard'" class="view-pane" />
+        <Sessions v-if="mountedViews.has('sessions')" v-show="view === 'sessions'" class="view-pane" />
+        <Requests v-if="mountedViews.has('requests')" v-show="view === 'requests'" class="view-pane" />
+        <Sources v-if="mountedViews.has('sources')" v-show="view === 'sources'" class="view-pane" />
+        <Settings v-if="mountedViews.has('settings')" v-show="view === 'settings'" class="view-pane" />
       </section>
     </main>
   </div>

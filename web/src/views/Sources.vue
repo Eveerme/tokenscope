@@ -45,15 +45,24 @@ const addPath = ref('')
 const addType = ref('hermes')
 const addSaving = ref(false)
 
-const pathLabel = computed(() => (addType.value === 'claude' ? 'Claude 项目目录（含 *.jsonl）' : '数据库路径（文件或包含它的目录）'))
+const pathLabel = computed(() => {
+  if (addType.value === 'claude') return 'Claude 项目目录（含 *.jsonl）'
+  if (addType.value === 'dsh') return 'DSH 会话目录（含 sessions/<…>/session.jsonl）'
+  return '数据库路径（文件或包含它的目录）'
+})
 const pathPlaceholder = computed(() => {
   switch (addType.value) {
     case 'codex': return '例如 C:\\Users\\me\\.codex（目录自动找 state_*.sqlite）'
     case 'zcode': return '例如 C:\\Users\\me\\.zcode（目录自动找 cli/db/db.sqlite）'
     case 'claude': return '例如 C:\\Users\\me\\.claude\\projects'
+    case 'dsh': return '例如 C:\\Users\\me\\.dsh\\sessions'
     default: return '例如 C:\\Users\\me\\AppData\\Local\\hermes\\state.db'
   }
 })
+
+// 以目录为数据源的工具（无单一数据库文件大小可言）
+const DIR_TYPES = new Set(['claude', 'dsh'])
+const isDirSource = (s: SourceInfo) => DIR_TYPES.has(s.type)
 
 async function addSource() {
   const path = addPath.value.trim()
@@ -110,7 +119,8 @@ async function removeSource(s: SourceInfo) {
           Hermes 主实例与各 profile 的 <code class="bg-slate-100 rounded px-1 font-mono">state.db</code>、
           Codex 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.codex\state_*.sqlite</code>、
           Claude Code 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.claude\projects</code>、
-          zcode 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.zcode\cli\db\db.sqlite</code>。
+          zcode 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.zcode\cli\db\db.sqlite</code>、
+          DeepSeek Harness 的 <code class="bg-slate-100 rounded px-1 font-mono">~\.dsh\sessions</code>。
           也可手动添加其他路径的数据（如其他机器拷贝的文件）。
         </p>
         <p class="text-[11px] text-slate-400 mt-1 font-mono">HERMES_HOME: {{ hermesHome || '—' }}</p>
@@ -167,8 +177,8 @@ async function removeSource(s: SourceInfo) {
             <div class="text-[15px] font-bold text-slate-800 tnum">{{ fmtTokens(s.total_cache_read) }}</div>
           </div>
           <div class="rounded-lg bg-amber-50/60 p-2.5">
-            <div class="text-[11px] text-slate-500">数据库</div>
-            <div class="text-[15px] font-bold text-slate-800 tnum">{{ fmtBytes(s.size) }}</div>
+            <div class="text-[11px] text-slate-500">{{ isDirSource(s) ? '目录' : '数据库' }}</div>
+            <div class="text-[15px] font-bold text-slate-800 tnum">{{ isDirSource(s) ? '—' : fmtBytes(s.size) }}</div>
           </div>
         </div>
 

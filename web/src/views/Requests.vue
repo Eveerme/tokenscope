@@ -14,6 +14,7 @@ const TOOL_LABELS: Record<string, string> = {
   codex: 'Codex',
   claude: 'Claude Code',
   zcode: 'zcode',
+  dsh: 'DeepSeek Harness',
 }
 
 const loading = ref(false)
@@ -90,8 +91,11 @@ function sessionLabel(r: RequestRecord): string {
 
 <template>
   <div class="space-y-5">
-    <!-- 汇总卡片 -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <!-- 汇总卡片（首次加载显示骨架屏） -->
+    <div v-if="loading && !items.length" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div v-for="i in 5" :key="i" class="skeleton h-[72px] rounded-[14px]" />
+    </div>
+    <div v-else class="grid grid-cols-2 md:grid-cols-5 gap-4">
       <div class="stat-card p-4">
         <div class="text-xs text-slate-400">请求数</div>
         <div class="text-2xl font-bold text-slate-800 mt-1">{{ totals.count.toLocaleString() }}</div>

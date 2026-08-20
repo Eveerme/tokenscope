@@ -5,7 +5,7 @@ import type { RangeState } from './types'
 export const RANGE_KEY: InjectionKey<ComputedRef<RangeState>> = Symbol('range')
 /** 全局刷新信号（App 提供，视图注入，值自增即触发重载） */
 export const REFRESH_KEY: InjectionKey<Ref<number>> = Symbol('refresh')
-/** 全局工具筛选（'all' = 全部，hermes/codex/claude/zcode） */
+/** 全局工具筛选（'all' = 全部，hermes/codex/claude/zcode/dsh） */
 export const TOOL_KEY: InjectionKey<Ref<string>> = Symbol('tool')
 
 export const TOOL_OPTIONS = [
@@ -14,4 +14,5 @@ export const TOOL_OPTIONS = [
   { value: 'codex', label: 'Codex' },
   { value: 'claude', label: 'Claude Code' },
   { value: 'zcode', label: 'zcode' },
+  { value: 'dsh', label: 'DeepSeek Harness' },
 ]

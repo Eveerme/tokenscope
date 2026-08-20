@@ -87,23 +87,32 @@ async function save() {
   }
 }
 
-async function fillExample() {
+const updating = ref(false)
+
+async function updatePricing() {
   try {
     await ElMessageBox.confirm(
-      '将用内置定价表（pricing.json，以 model-pricing.json 为准）覆盖当前全部定价，继续？',
-      '恢复内置定价表',
-      { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '取消' },
+      '将从 models.dev 拉取最新官方定价，刷新当前定价表中已收录模型的价格' +
+      '（未收录的模型保留原值）。需要联网，继续？',
+      '更新定价',
+      { type: 'info', confirmButtonText: '更新', cancelButtonText: '取消' },
     )
   } catch {
     return
   }
+  updating.value = true
   try {
-    const res = await api.examplePricing()
+    const res = await api.updatePricing()
     rows.value = toRows(res.pricing)
     refreshTick.value++
-    ElMessage.success('已恢复内置定价表')
+    ElMessage.success(
+      `已从 models.dev 更新 ${res.stats.updated}/${res.stats.total} 个模型定价` +
+      `（保留 ${res.stats.preserved} 个未收录模型）`,
+    )
   } catch (e) {
     ElMessage.error((e as Error).message)
+  } finally {
+    updating.value = false
   }
 }
 </script>
@@ -114,9 +123,14 @@ async function fillExample() {
     <div class="stat-card p-5">
       <h2 class="text-[15px] font-bold text-slate-800 mb-2">模型定价表（成本估算）</h2>
       <p class="text-xs text-slate-500 leading-relaxed">
-        Hermes 会话数据里记录了 tokens 消耗，但成本需要按模型定价估算。
+        会话数据里记录了 tokens 消耗，但成本需要按模型定价估算。
         价格单位为 <b>USD / 每百万 tokens</b>。未配置定价的模型，成本显示为「—」。
         公式：<code class="bg-slate-100 rounded px-1 font-mono">输入 ÷ 1e6 × 单价 + 输出 ÷ 1e6 × 单价 + 缓存读取 ÷ 1e6 × 单价</code>
+      </p>
+      <p class="text-[11px] text-slate-400 mt-1 leading-relaxed">
+        每次启动会自动从 <a href="https://models.dev/" target="_blank" rel="noopener" class="text-slate-500 underline">models.dev</a>
+        拉取最新官方定价（离线时沿用本地）；「更新定价」按钮可手动刷新。
+        同一模型被多家收录时优先取官方 provider 价格，未收录的模型保留原值。
       </p>
     </div>
 
@@ -125,7 +139,7 @@ async function fillExample() {
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-[13px] font-bold text-slate-700">定价配置</h3>
         <div class="flex items-center gap-2">
-          <el-button size="small" @click="fillExample">恢复内置定价表</el-button>
+          <el-button size="small" :loading="updating" @click="updatePricing">更新定价</el-button>
           <el-button size="small" :icon="Plus" @click="addRow">添加模型</el-button>
           <el-button size="small" type="primary" :loading="saving" @click="save">保存</el-button>
         </div>

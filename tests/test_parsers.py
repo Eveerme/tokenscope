@@ -94,6 +94,46 @@ class TestCodex:
         assert sum(x["input"] for x in recs) == 300
         assert all(x["_sid"] == "t1" for x in recs)
 
+    def test_orphan_archived_rollout(self, tmp_path):
+        """archived_sessions 下未被 state DB 引用的孤儿 rollout 也应被统计"""
+        import sqlite3
+        home = tmp_path / "codex"
+        (home / "archived_sessions").mkdir(parents=True)
+        (home / "sessions").mkdir(parents=True)
+        db = home / "state_5.sqlite"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, tokens_used INTEGER)")
+        # state DB 只引用 sessions/ 下的一个 rollout
+        ref = home / "sessions" / "rollout-2026-01-01T09-00-00-ref.jsonl"
+        ref.write_text(json.dumps({"type": "session_meta",
+                                   "payload": {"originator": "Codex CLI", "source": "cli",
+                                               "id": "t1", "cwd": "/p"}}) + "\n",
+                       encoding="utf-8")
+        conn.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?)",
+                     ("t1", str(ref), 1700000000000, 1700000100000, "cli", "openai", "/p", "ref", 0))
+        conn.commit()
+        conn.close()
+        # 孤儿 rollout（archived_sessions，不在 state DB）
+        orphan = home / "archived_sessions" / "rollout-2026-01-01T10-00-00-abc.jsonl"
+        orphan.write_text(
+            json.dumps({"type": "session_meta",
+                        "payload": {"originator": "Codex Desktop", "source": "vscode",
+                                    "id": "orphan-1", "cwd": "/orphan"}}) + "\n"
+            + json.dumps({"timestamp": "2026-01-01T10:00:00.000Z", "type": "event_msg",
+                          "payload": {"type": "token_count",
+                                      "info": {"last_token_usage": {
+                                          "input_tokens": 77, "output_tokens": 7}}}}) + "\n",
+            encoding="utf-8")
+        recs = parsers.parse_codex(str(db), default_model="gpt-test")
+        by_sid = {r.get("_sid") or r["id"]: r for r in recs}
+        assert "t1" in by_sid
+        assert "orphan-1" in by_sid              # 孤儿会话被纳入
+        o = by_sid["orphan-1"]
+        assert o["input"] == 77
+        assert o["output"] == 7
+        assert o["source"] == "desktop"          # originator=Codex Desktop
+        assert o["cwd"] == "/orphan"
+
 
 class TestClaude:
     def test_parse_accumulate(self, claude_projects):
@@ -109,11 +149,32 @@ class TestClaude:
         assert r["model"] == "claude-x"
         assert r["message_count"] == 3
 
-    def test_user_only_session(self, claude_projects):
+    def test_user_only_session_skipped(self, claude_projects):
+        """纯 user 会话（无 assistant 消息，如 /usage 本地命令会话）不生成记录"""
         recs = {r["title"]: r for r in parsers.parse_claude(str(claude_projects))}
-        r = recs["hi"]
-        assert r["api_calls"] == 0
-        assert r["input"] == 0
+        assert "hi" not in recs          # sess2 纯 user、无 assistant 消息 → 跳过
+        assert "你好" in recs             # sess1 有 assistant 消息 → 保留
+
+    def test_zero_usage_assistant_kept(self, tmp_path):
+        """有 assistant 消息但 0 usage（如 <synthetic> 合成消息）仍生成记录"""
+        proj = tmp_path / "projects" / "D--work-AI-Proj"
+        proj.mkdir(parents=True)
+        (proj / "s1.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "q"},
+                        "timestamp": "2026-01-01T00:00:00.000Z"}) + "\n"
+            + json.dumps({"type": "assistant",
+                          "message": {"model": "<synthetic>",
+                                      "content": "No response requested.",
+                                      "usage": {"input_tokens": 0, "output_tokens": 0,
+                                                "cache_read_input_tokens": 0,
+                                                "cache_creation_input_tokens": 0}},
+                          "timestamp": "2026-01-01T00:00:05.000Z"}) + "\n",
+            encoding="utf-8")
+        recs = parsers.parse_claude(str(tmp_path / "projects"))
+        assert len(recs) == 1
+        assert recs[0]["model"] == "<synthetic>"
+        assert recs[0]["input"] == 0
+        assert recs[0]["api_calls"] == 0
 
     def test_subagents_included(self, tmp_path):
         """subagents/ 目录下的子代理会话用量应归入父会话（_sid 一致）"""
@@ -154,6 +215,30 @@ class TestClaude:
         assert sum(r["input"] for r in recs) == 300
         assert all(r.get("_sid") == "s1" for r in recs)
 
+    def test_transcripts_dir(self, tmp_path):
+        """同级 transcripts/ 目录的裸转录文件（ses_*.jsonl）也应被统计（cwd 未知）"""
+        projects = tmp_path / "projects"
+        projects.mkdir()
+        transcripts = tmp_path / "transcripts"
+        transcripts.mkdir()
+        (transcripts / "ses_abc.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "转录问题"},
+                        "timestamp": "2026-01-01T00:00:00.000Z"}) + "\n"
+            + json.dumps({"type": "assistant",
+                          "message": {"model": "claude-t", "content": "回答",
+                                      "usage": {"input_tokens": 33, "output_tokens": 4,
+                                                "cache_read_input_tokens": 2}},
+                          "timestamp": "2026-01-01T00:00:05.000Z"}) + "\n",
+            encoding="utf-8")
+        recs = parsers.parse_claude(str(projects))
+        t_recs = [r for r in recs if r.get("_sid") == "ses_abc"]
+        assert len(t_recs) == 1
+        assert t_recs[0]["cwd"] == ""            # 裸转录无项目目录，cwd 未知
+        assert t_recs[0]["input"] == 33
+        assert t_recs[0]["output"] == 4
+        assert t_recs[0]["cache_read"] == 2
+        assert t_recs[0]["model"] == "claude-t"
+
 
 class TestZcode:
     def test_aggregate(self, zcode_db):
@@ -162,8 +247,11 @@ class TestZcode:
         by_id = {r["_sid"]: r for r in recs}
         z1 = by_id["z1"]
         # 只统计 status=completed：GLM-X 两次 + GLM-Y rate_limited 排除
-        assert z1["input"] == 300        # 100 + 200
-        assert z1["output"] == 30
+        # zcode 的 input 为缓存包含式，归一化后：
+        #   行1 net_in=100-50-20=30, net_out=10-5=5
+        #   行2 net_in=200-100-0=100, net_out=20-0=20
+        assert z1["input"] == 130        # 30 + 100
+        assert z1["output"] == 25        # 5 + 20
         assert z1["reasoning"] == 5
         assert z1["cache_write"] == 50   # cache_creation
         assert z1["cache_read"] == 120   # 20 + 100
@@ -189,16 +277,17 @@ class TestZcode:
         conn.execute("CREATE TABLE model_usage (session_id TEXT, model_id TEXT, "
                      "input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, "
                      "cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER, "
+                     "computed_total_tokens INTEGER, "
                      "started_at INTEGER, completed_at INTEGER, status TEXT, tool_call_count INTEGER)")
         conn.execute("INSERT INTO session VALUES (?,?,?,?,?)",
                      ("s1", "/p", "跨小时", 1700000000000, 1700000000000))
-        # 同一会话在三个相邻小时各发生一次请求
+        # 同一会话在三个相邻小时各发生一次请求（无缓存，computed_total=in+out）
         h0, h1, h2 = 1700000000, 1700003600, 1700007200
         conn.executemany(
-            "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            [("s1", "M", 100, 1, 0, 0, 0, h0 * 1000, h0 * 1000, "completed", 0),
-             ("s1", "M", 200, 2, 0, 0, 0, h1 * 1000, h1 * 1000, "completed", 0),
-             ("s1", "M", 300, 3, 0, 0, 0, h2 * 1000, h2 * 1000, "completed", 0)])
+            "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [("s1", "M", 100, 1, 0, 0, 0, 101, h0 * 1000, h0 * 1000, "completed", 0),
+             ("s1", "M", 200, 2, 0, 0, 0, 202, h1 * 1000, h1 * 1000, "completed", 0),
+             ("s1", "M", 300, 3, 0, 0, 0, 303, h2 * 1000, h2 * 1000, "completed", 0)])
         conn.commit()
         conn.close()
         recs = parsers.parse_zcode(str(db))
@@ -207,6 +296,63 @@ class TestZcode:
         assert starts == [h - (h % 3600) for h in (h0, h1, h2)]   # 各自小时起点
         assert {r["_sid"] for r in recs} == {"s1"}
         assert sum(r["input"] for r in recs) == 600
+
+
+class TestDsh:
+    def test_parse_all(self, dsh_sessions):
+        recs = parsers.parse_dsh(str(dsh_sessions))
+        assert len(recs) == 3
+        by_sid = {r["_sid"]: r for r in recs}
+        # 会话 1（明文）：2 条 assistant
+        a = by_sid["session-aaa"]
+        assert a["tool"] == "dsh"
+        assert a["title"] == "DSH 会话一"
+        assert a["model"] == "deepseek-v4-pro"
+        assert a["cwd"] == "/home/u/proj1"
+        assert a["input"] == 400          # 100 + 300
+        assert a["output"] == 75          # (50-5) + 30（reasoning 是 output 子集）
+        assert a["cache_read"] == 120     # 20 + 100
+        assert a["reasoning"] == 5
+        assert a["api_calls"] == 2
+        assert a["id"].startswith("session-aaa@")
+        # 会话 2（zstd）：1 条 assistant
+        b = by_sid["session-bbb"]
+        assert b["model"] == "deepseek-v4-flash"
+        assert b["cwd"] == "/home/u/proj2"
+        assert b["input"] == 50
+        assert b["output"] == 10
+        assert b["api_calls"] == 1
+        # 会话 3（0 消耗）
+        c = by_sid["session-ccc"]
+        assert c["input"] == 0
+        assert c["output"] == 0
+        assert c["api_calls"] == 0
+        assert c["title"] == "(无标题)"
+
+    def test_messages(self, dsh_sessions):
+        src = {"type": "dsh", "path": str(dsh_sessions)}
+        msgs = parsers.extract_session_messages(src, "session-aaa")
+        roles = [m["role"] for m in msgs]
+        assert "user" in roles
+        assert "assistant" in roles
+        user = [m for m in msgs if m["role"] == "user"][0]
+        assert user["content"] == "帮我写代码"
+
+    def test_requests(self, dsh_sessions):
+        src = {"type": "dsh", "path": str(dsh_sessions)}
+        reqs = parsers.extract_requests(src)
+        # session-aaa 2 条 + session-bbb 1 条 = 3 条
+        assert len(reqs) == 3
+        a_reqs = [q for q in reqs if q["session_id"] == "session-aaa"]
+        assert len(a_reqs) == 2
+        assert sum(q["input"] for q in a_reqs) == 400
+        # output 为净值（已减 reasoning）
+        assert a_reqs[0]["output"] == 45   # 50 - 5
+        assert a_reqs[0]["reasoning"] == 5
+        assert a_reqs[0]["model"] == "deepseek-v4-pro"
+
+    def test_missing_dir(self, tmp_path):
+        assert parsers.parse_dsh(str(tmp_path / "nope")) == []
 
 
 class TestHelpers:
@@ -263,8 +409,8 @@ class TestHelpers:
                           "payload": {"type": "token_count",
                                      "info": {"total_token_usage": {"input_tokens": 10}}}}) + "\n",
             encoding="utf-8")
-        buckets, _originator, model = parsers._codex_rollout_hourly(str(r))
-        assert model == "gpt-5.6-sol"
+        buckets, meta = parsers._codex_rollout_hourly(str(r))
+        assert meta["model"] == "gpt-5.6-sol"
         assert sum(b["input"] for b in buckets.values()) == 10
 
     def test_rollout_hourly_no_model(self, tmp_path):
@@ -275,8 +421,8 @@ class TestHelpers:
                         "payload": {"type": "token_count",
                                    "info": {"total_token_usage": {"input_tokens": 5}}}}) + "\n",
             encoding="utf-8")
-        buckets, _originator, model = parsers._codex_rollout_hourly(str(r))
-        assert model is None
+        buckets, meta = parsers._codex_rollout_hourly(str(r))
+        assert meta["model"] is None
         assert sum(b["input"] for b in buckets.values()) == 5
 
     def test_rollout_start_from_filename(self, tmp_path):

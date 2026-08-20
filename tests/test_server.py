@@ -16,11 +16,12 @@ class TestAggregation:
                     ("claude", claude_projects), ("zcode", zcode_db)])
         summ = server.api_summary(cfg, {})
         t = summ["totals"]
-        # hermes 2 + codex 3 + claude 2 + zcode 2
-        assert t["sessions"] == 9
-        # input: hermes 1100 + codex 110 + claude 15 + zcode 310
-        assert t["input"] == 1100 + 110 + 15 + 310
-        assert t["output"] == 550 + 25 + 22 + 31
+        # hermes 2 + codex 3 + claude 1（纯 user 会话被跳过）+ zcode 2
+        assert t["sessions"] == 8
+        # input: hermes 1100 + codex 110 + claude 15 + zcode 140（归一化后 130+10）
+        assert t["input"] == 1100 + 110 + 15 + 140
+        # output: hermes 550 + codex 25 + claude 22 + zcode 26（归一化后 25+1）
+        assert t["output"] == 550 + 25 + 22 + 26
         # by_tool 四个工具齐全
         assert {x["key"] for x in summ["by_tool"]} == {"hermes", "codex", "claude", "zcode"}
 
@@ -173,3 +174,89 @@ def test_load_pricing_json():
         assert p["gpt-5.5-pro"]["input"] == 30.0
     else:
         assert p == {}
+
+
+class TestPricingUpdate:
+    """models.dev 定价更新（网络层用 monkeypatch 打桩，不依赖联网）"""
+
+    def test_official_provider(self):
+        assert server._official_provider("deepseek-chat") == "deepseek"
+        assert server._official_provider("gpt-4o") == "openai"
+        assert server._official_provider("o3-mini") == "openai"
+        assert server._official_provider("claude-sonnet-4-5") == "anthropic"
+        assert server._official_provider("qwen3-max") == "alibaba"
+        assert server._official_provider("glm-4.6") == "zhipuai"
+        assert server._official_provider("unknown-xyz") is None
+
+    def test_normalize_model_id(self):
+        assert server._normalize_model_id("openai/gpt-4o") == "gpt-4o"
+        assert server._normalize_model_id("DeepSeek-Chat") == "deepseek-chat"
+        assert server._normalize_model_id("  gpt-4o  ") == "gpt-4o"
+        assert server._normalize_model_id("") == ""
+
+    def test_refresh_updates_and_preserves(self, tmp_path, monkeypatch):
+        # 打桩网络层：返回固定的 models.dev 定价
+        fake_lookup = {
+            "deepseek-chat": {"input": 0.14, "output": 0.28,
+                              "cache_read": 0.0028, "cache_write": 0.0},
+            "gpt-4o": {"input": 2.5, "output": 10.0,
+                       "cache_read": 1.25, "cache_write": 0.0},
+        }
+        monkeypatch.setattr(server, "fetch_models_dev_pricing",
+                            lambda timeout=15: fake_lookup)
+        monkeypatch.setattr(server, "CONFIG_PATH", str(tmp_path / "config.json"))
+        cfg = {"sources": [], "pricing": {
+            "deepseek-chat": {"input": 0.10, "output": 0.30,
+                              "cache_read": 0.01, "cache_write": 0.0},
+            "gpt-4o": {"input": 2.0, "output": 8.0,
+                       "cache_read": 1.0, "cache_write": 0.0},
+            "my-custom-model": {"input": 9.9, "output": 9.9,
+                                "cache_read": 0.0, "cache_write": 0.0},
+            "openai/gpt-4o": {"input": 1.0, "output": 9.0,
+                              "cache_read": 0.1, "cache_write": 0.0},
+        }}
+        stats = server.refresh_pricing_from_models_dev(cfg)
+        # deepseek-chat / gpt-4o / openai/gpt-4o 命中 models.dev（3 个），
+        # my-custom-model 未收录保留（1 个）
+        assert stats == {"updated": 3, "preserved": 1, "total": 4}
+        assert cfg["pricing"]["deepseek-chat"]["input"] == 0.14
+        assert cfg["pricing"]["gpt-4o"]["input"] == 2.5
+        # provider 前缀归一化后命中 gpt-4o
+        assert cfg["pricing"]["openai/gpt-4o"]["input"] == 2.5
+        # 未收录模型保留原值
+        assert cfg["pricing"]["my-custom-model"]["input"] == 9.9
+        # 配置已落盘
+        import os
+        assert os.path.isfile(str(tmp_path / "config.json"))
+
+    def test_refresh_failure_raises(self, monkeypatch):
+        def _boom(timeout=15):
+            raise OSError("network unreachable")
+        monkeypatch.setattr(server, "fetch_models_dev_pricing", _boom)
+        cfg = {"sources": [], "pricing": {"deepseek-chat": {"input": 1}}}
+        try:
+            server.refresh_pricing_from_models_dev(cfg)
+            assert False, "should have raised"
+        except OSError:
+            pass
+        # 失败时不改动定价
+        assert cfg["pricing"]["deepseek-chat"]["input"] == 1
+
+
+class TestSourcesFull:
+    def test_dir_based_source_exists(self, dsh_sessions):
+        """目录型数据源（dsh/claude）应按 isdir 判定存在，而非 isfile"""
+        cfg = _cfg([("dsh", dsh_sessions)])
+        res = server.api_sources_full(cfg)
+        dsh = [s for s in res["sources"] if s["type"] == "dsh"][0]
+        assert dsh["exists"] is True          # 目录存在 → exists=True
+        assert dsh["db_sessions"] > 0         # 能解析出会话
+        assert dsh["size"] == 0               # 目录型无文件大小
+        assert dsh["modified_at"] == 0        # 目录型不取 mtime
+
+    def test_file_based_source_missing(self, tmp_path):
+        """文件型数据源路径不存在时 exists=False"""
+        cfg = _cfg([("hermes", tmp_path / "nope" / "state.db")])
+        res = server.api_sources_full(cfg)
+        hermes = [s for s in res["sources"] if s["type"] == "hermes"][0]
+        assert hermes["exists"] is False

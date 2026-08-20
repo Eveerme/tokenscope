@@ -24,9 +24,20 @@ import json
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime
 
-TOOL_LABELS = {"hermes": "Hermes", "codex": "Codex", "claude": "Claude Code", "zcode": "zcode"}
+# zstd 解压（DSH 会话文件为 zstd 多帧压缩）。zstandard 为可选依赖：
+# 未安装时回退到系统 zstd CLI；两者都不可用时 .zstd 文件被跳过（明文 .jsonl 仍可解析）。
+try:
+    import zstandard as _zstandard
+except ImportError:  # pragma: no cover - 取决于运行环境
+    _zstandard = None
+
+TOOL_LABELS = {
+    "hermes": "Hermes", "codex": "Codex", "claude": "Claude Code",
+    "zcode": "zcode", "dsh": "DeepSeek Harness",
+}
 
 # 解析结果缓存: {path: (key, records)}，key 为数据文件/目录的最新 mtime
 _cache = {}
@@ -123,6 +134,54 @@ def _candidate_homes(env_names, default_sub):
         yield d
 
 
+def _dsh_home():
+    """DeepSeek Harness 数据目录（DSH_HOME 环境变量优先，其次 ~/.dsh）"""
+    v = os.environ.get("DSH_HOME")
+    if v:
+        v = os.path.normpath(os.path.expanduser(v))
+        if os.path.isdir(v):
+            return v
+    return os.path.expanduser("~/.dsh")
+
+
+# zstd 帧魔数（RFC 8478 §3.1.1）
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _zstd_decompress(raw):
+    """解压 zstd 字节流（支持多帧拼接）。
+
+    DSH 每个 flush 追加一个 zstd 帧，因此文件是多个帧的拼接；正在写入的
+    会话末尾可能有一个被截断的帧。这里用流式解压保留可解码的前缀，
+    截断的尾部帧由调用方的逐行解析丢弃（半行 JSON 解析失败即跳过）。
+    返回 bytes；无法解压时返回 None。
+    """
+    if _zstandard is not None:
+        try:
+            import io
+            dctx = _zstandard.ZstdDecompressor()
+            with dctx.stream_reader(io.BytesIO(raw), closefd=False) as reader:
+                return reader.read()
+        except Exception:
+            # 末尾帧被截断时 stream_reader 可能抛错；退回 decompressobj
+            # （它会缓冲未完成的尾部帧，返回已完整解码的部分）。
+            try:
+                dobj = _zstandard.ZstdDecompressor().decompressobj()
+                return dobj.decompress(raw)
+            except Exception:
+                return None
+    # 回退：系统 zstd CLI
+    try:
+        import subprocess
+        r = subprocess.run(["zstd", "-d", "-c"], input=raw,
+                           capture_output=True, timeout=30)
+        if r.returncode == 0:
+            return r.stdout
+    except (OSError, subprocess.SubprocessError):  # noqa: F821
+        pass
+    return None
+
+
 def discover():
     """自动发现已安装工具的数据源（启动时扫描，无需手动配置）"""
     out = []
@@ -141,7 +200,7 @@ def discover():
     home = _hermes_home()
     main_db = os.path.join(home, "state.db")
     if os.path.isfile(main_db):
-        add("hermes", "default", main_db)
+        add("hermes", "hermes", main_db)
     prof_dir = os.path.join(home, "profiles")
     if os.path.isdir(prof_dir):
         for name in sorted(os.listdir(prof_dir)):
@@ -167,6 +226,11 @@ def discover():
         if os.path.isfile(db):
             add("zcode", "zcode", db)
 
+    # --- DeepSeek Harness: sessions 目录（DSH_HOME 或 ~/.dsh）---
+    dsh_sessions = os.path.join(_dsh_home(), "sessions")
+    if os.path.isdir(dsh_sessions):
+        add("dsh", "dsh", dsh_sessions)
+
     return out
 
 
@@ -174,16 +238,33 @@ def discover():
 # 缓存与入口
 # ---------------------------------------------------------------------------
 
+# 目录型数据源的 key 计算缓存：path -> (computed_at, key)。
+# 目录 key 需要遍历整棵树统计 .jsonl 的 mtime，而 parse_source 在每次 API
+# 请求时都会调用；用短 TTL 短路可把「每次请求全树 walk」降为「每 TTL 秒一次」，
+# 大目录（数百~数千会话文件）时显著降低开销。TTL 内的新增/修改最多延迟 TTL 秒
+# 才被感知，对用量看板可接受。
+_dir_key_cache = {}
+_DIR_KEY_TTL = 3.0
+
+
 def _key_for(path, is_dir=False):
     if is_dir:
+        now = time.time()
+        cached = _dir_key_cache.get(path)
+        if cached and (now - cached[0]) < _DIR_KEY_TTL:
+            return cached[1]
         mx = 0.0
         try:
             for root, _dirs, files in os.walk(path):
                 for f in files:
-                    if f.endswith(".jsonl"):
-                        mx = max(mx, os.path.getmtime(os.path.join(root, f)))
+                    if f.endswith(".jsonl") or f.endswith(".jsonl.zstd"):
+                        try:
+                            mx = max(mx, os.path.getmtime(os.path.join(root, f)))
+                        except OSError:
+                            pass
         except OSError:
             pass
+        _dir_key_cache[path] = (now, mx)
         return mx
     try:
         return os.path.getmtime(path) if os.path.isfile(path) else 0.0
@@ -195,7 +276,7 @@ def parse_source(src):
     """按数据源类型解析（带 mtime 缓存），返回统一会话记录列表"""
     t = src.get("type", "hermes")
     p = src.get("path", "")
-    key = _key_for(p, is_dir=(t == "claude"))
+    key = _key_for(p, is_dir=(t in ("claude", "dsh")))
     cached = _cache.get(p)
     if cached and cached[0] == key:
         return cached[1]
@@ -205,6 +286,8 @@ def parse_source(src):
         recs = parse_claude(p)
     elif t == "zcode":
         recs = parse_zcode(p)
+    elif t == "dsh":
+        recs = parse_dsh(p)
     else:
         recs = parse_hermes(p)
     _cache[p] = (key, recs)
@@ -310,15 +393,17 @@ def _codex_rollout_start(path):
 def _codex_rollout_hourly(path, fallback_ts=None):
     """读 codex rollout，按 token_count 事件把请求用量归到本地小时桶。
 
-    返回 (buckets, originator, model)：
+    返回 (buckets, meta)：
       buckets: {hour_ts: {input/output/cache_read/cache_write/reasoning/calls}}
+      meta:    {originator, model, id, cwd, model_provider, timestamp}
+               （来自 session_meta / world_state，供孤儿 rollout 直接建记录）
     事件无时间戳时用 fallback_ts（线程级兜底时间）归桶；
     无任何用量时 buckets 为空（调用方按 0 消耗会话处理）；文件不可读返回 None。
     """
     p = _clean_win_path(path)
     buckets = {}
-    originator = None
-    model = None
+    meta = {"originator": None, "model": None, "id": "", "cwd": "",
+            "model_provider": "", "timestamp": None}
     prev_total = None
     try:
         with open(p, encoding="utf-8") as fh:
@@ -328,11 +413,20 @@ def _codex_rollout_hourly(path, fallback_ts=None):
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if d.get("type") == "session_meta":
-                    originator = d.get("payload", {}).get("originator")
+                    pl = d.get("payload", {}) or {}
+                    meta["originator"] = pl.get("originator")
+                    if not meta["id"]:
+                        meta["id"] = pl.get("id") or pl.get("session_id") or ""
+                    if not meta["cwd"]:
+                        meta["cwd"] = _clean_win_path(pl.get("cwd") or "")
+                    if not meta["model_provider"]:
+                        meta["model_provider"] = pl.get("model_provider") or ""
+                    if meta["timestamp"] is None:
+                        meta["timestamp"] = _iso_to_ts(pl.get("timestamp"))
                 elif d.get("type") == "world_state":
                     st = d.get("payload", {}).get("state", {})
                     if isinstance(st, dict) and st.get("model"):
-                        model = st["model"]
+                        meta["model"] = st["model"]
                 elif d.get("type") == "event_msg":
                     pl = d.get("payload", {})
                     if pl.get("type") != "token_count":
@@ -381,7 +475,7 @@ def _codex_rollout_hourly(path, fallback_ts=None):
                     b["calls"] += 1
     except OSError:
         return None
-    return buckets, originator, model
+    return buckets, meta
 
 
 def _codex_source_from_originator(raw):
@@ -396,12 +490,71 @@ def _codex_source_from_originator(raw):
     return None
 
 
+def _codex_orphan_rollouts(home, referenced, default_model):
+    """扫描 sessions/ 与 archived_sessions/ 下未被 state DB 引用的孤儿 rollout。
+
+    Codex 归档会话时会把 rollout 从 sessions/ 移到 archived_sessions/，且部分
+    旧会话已从 state DB 的 threads 表移除——这些会话用 state DB 作索引会漏掉。
+    这里直接解析这些孤儿 rollout（session_meta 提供 id/cwd/originator，
+    token_count 提供用量），按小时桶建记录，避免重复计数（referenced 去重）。
+    """
+    recs = []
+    if not home or not os.path.isdir(home):
+        return recs
+    seen_ids = set()
+    for sub in ("sessions", "archived_sessions"):
+        root = os.path.join(home, sub)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            for fname in sorted(files):
+                if not fname.endswith(".jsonl") or "rollout-" not in fname:
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                if os.path.normpath(fpath) in referenced:
+                    continue
+                detail = _codex_rollout_hourly(fpath, _codex_rollout_start(fpath))
+                if detail is None:
+                    continue
+                buckets, meta = detail
+                rid = meta["id"] or os.path.splitext(fname)[0]
+                if rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                src = _codex_source_from_originator(meta["originator"]) or "cli"
+                model = meta["model"] or default_model
+                if buckets:
+                    for hour_ts, b in sorted(buckets.items()):
+                        recs.append(_record(
+                            "codex", id=f"{rid}@{hour_ts}", _sid=rid,
+                            title="(无标题)", model=model,
+                            cwd=meta["cwd"], source=src,
+                            started_at=hour_ts, ended_at=hour_ts + 3600,
+                            input=b["input"], output=b["output"],
+                            cache_read=b["cache_read"], cache_write=b["cache_write"],
+                            reasoning=b["reasoning"], api_calls=b["calls"],
+                            message_count=0,
+                        ))
+                else:
+                    recs.append(_record(
+                        "codex", id=rid, title="(无标题)", model=model,
+                        cwd=meta["cwd"], source=src,
+                        started_at=meta["timestamp"], ended_at=None,
+                        input=0, output=0, cache_read=0, cache_write=0,
+                        reasoning=0, api_calls=0, message_count=0,
+                    ))
+    return recs
+
+
 def parse_codex(state_db, default_model=None):
     """解析 Codex 的 state_*.sqlite（threads 表）+ rollout JSONL 明细。
 
     rollout 的 token_count 事件带真实时间戳，会话内请求按「本地小时桶」拆分
     （与 zcode 一致，避免长会话或 threads.created_at 异常导致时间归因错误）；
     0 消耗或无 rollout 的会话保留会话级记录。
+
+    额外扫描 sessions/ 与 archived_sessions/ 下未被 state DB 引用的孤儿
+    rollout（含已归档、已从 threads 表移除的旧会话），避免漏统计。
 
     default_model: 模型名兜底；不传则读 ~/.codex/config.toml（测试/离线环境可显式传入）"""
     recs = []
@@ -420,15 +573,18 @@ def parse_codex(state_db, default_model=None):
         conn.close()
     except sqlite3.Error:
         return recs
+    referenced = set()
+    for r in rows:
+        referenced.add(os.path.normpath(_clean_win_path(r["rollout_path"] or "")))
     for r in rows:
         rid = r["id"]
         # threads.created_at 在某些版本不可靠（如 1970），优先 rollout 文件名时间
         fallback_ts = _codex_rollout_start(r["rollout_path"]) or _ms_to_s(r["created_at"])
         detail = _codex_rollout_hourly(r["rollout_path"], fallback_ts)
         if detail is not None:
-            buckets, originator, model = detail
-            src = _codex_source_from_originator(originator) or _codex_source(r["source"])
-            model = model or default_model
+            buckets, meta = detail
+            src = _codex_source_from_originator(meta["originator"]) or _codex_source(r["source"])
+            model = meta["model"] or default_model
             if buckets:
                 for hour_ts, b in sorted(buckets.items()):
                     recs.append(_record(
@@ -462,6 +618,8 @@ def parse_codex(state_db, default_model=None):
             input=r["tokens_used"] or 0, output=0, cache_read=0, cache_write=0,
             reasoning=0, api_calls=1, message_count=0,
         ))
+    # 孤儿 rollout（含 archived_sessions 中已从 threads 表移除的旧会话）
+    recs.extend(_codex_orphan_rollouts(os.path.dirname(state_db), referenced, default_model))
     return recs
 
 
@@ -495,6 +653,98 @@ def _claude_text(content):
     return ""
 
 
+def _claude_session_records(flist, sid, cwd):
+    """解析一组 Claude Code jsonl 文件（同一会话），按本地小时桶建记录。
+
+    只统计带显式 usage 元数据的 assistant 消息（不做字符估算）；
+    返回记录 id = f"{sid}@{hour_ts}"，真实会话 id 存 _sid；0 消耗保留会话级记录。
+    无任何 assistant 消息的 0 消耗会话（如 /usage、/model 等本地命令会话，
+    只记录 user/system/queue 事件、未调用模型）直接跳过，不生成记录。
+    """
+    recs = []
+    buckets = {}   # hour_ts -> {input, output, cache_read, cache_write, calls, msgs, models}
+    hour_msgs = {}   # hour_ts -> 该小时内的全部消息数
+    title = ""
+    model = ""
+    started = ended = None
+    last_ts = None
+    msgs_total = 0
+    assistant_count = 0
+    for fpath in flist:
+        try:
+            with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    t = d.get("type")
+                    ts = _iso_to_ts(d.get("timestamp")) or last_ts
+                    if started is None and ts:
+                        started = ts
+                    if ts:
+                        ended = ts
+                        last_ts = ts
+                        hkey = int(datetime.fromtimestamp(ts).replace(
+                            minute=0, second=0, microsecond=0).timestamp())
+                        hour_msgs[hkey] = hour_msgs.get(hkey, 0) + 1
+                    if t == "assistant":
+                        assistant_count += 1
+                        msg = d.get("message") or {}
+                        u = msg.get("usage") or {}
+                        inp = u.get("input_tokens") or 0
+                        out = u.get("output_tokens") or 0
+                        cr = u.get("cache_read_input_tokens") or 0
+                        cw = u.get("cache_creation_input_tokens") or 0
+                        if (inp or out or cr or cw) and ts:
+                            key = int(datetime.fromtimestamp(ts).replace(
+                                minute=0, second=0, microsecond=0).timestamp())
+                            b = buckets.get(key)
+                            if b is None:
+                                b = {"input": 0, "output": 0, "cache_read": 0,
+                                     "cache_write": 0, "calls": 0, "msgs": 0, "models": {}}
+                                buckets[key] = b
+                            b["input"] += inp
+                            b["output"] += out
+                            b["cache_read"] += cr
+                            b["cache_write"] += cw
+                            b["calls"] += 1
+                            md = msg.get("model") or ""
+                            b["models"][md] = b["models"].get(md, 0) + inp
+                        if not model and msg.get("model"):
+                            model = msg["model"]
+                    elif t == "user" and not title:
+                        txt = _claude_text(d.get("message", {}).get("content"))
+                        title = txt[:60] if txt else "(无标题)"
+                    msgs_total += 1
+        except OSError:
+            continue
+    if buckets:
+        for hour_ts, b in sorted(buckets.items()):
+            b["msgs"] = hour_msgs.get(hour_ts, 0)
+            bmodel = max(b["models"], key=b["models"].get) if b["models"] else model
+            recs.append(_record(
+                "claude", id=f"{sid}@{hour_ts}", _sid=sid,
+                title=title or "(无标题)", model=bmodel, cwd=cwd, source="claude",
+                started_at=hour_ts, ended_at=hour_ts + 3600,
+                input=b["input"], output=b["output"],
+                cache_read=b["cache_read"], cache_write=b["cache_write"],
+                reasoning=0, api_calls=b["calls"], message_count=b["msgs"],
+            ))
+    else:
+        # 0 消耗会话：保留会话级记录；但无任何 assistant 消息的会话
+        # （本地命令会话，如 /usage、/model，未调用模型）直接跳过
+        if assistant_count > 0:
+            recs.append(_record(
+                "claude", id=sid, title=title or "(无标题)", model=model,
+                cwd=cwd, source="claude",
+                started_at=started, ended_at=ended,
+                input=0, output=0, cache_read=0, cache_write=0,
+                reasoning=0, api_calls=0, message_count=msgs_total,
+            ))
+    return recs
+
+
 def parse_claude(projects_dir):
     """Claude Code：projects jsonl 会话按「本地小时桶」拆分。
 
@@ -502,6 +752,9 @@ def parse_claude(projects_dir):
     这些子代理会话的用量一并归入父会话统计（真实会话 id 为 _sid）；
     所有 assistant 消息的用量按消息时间戳归到对应小时桶，避免长会话
     用量堆在会话开始时刻（与 zcode/codex 一致）。
+
+    额外解析同级 transcripts/ 目录下的裸转录文件（ses_*.jsonl，无项目目录
+    结构，cwd 未知），与 projects 一并统计。
 
     返回记录 id = f"{session_id}@{hour_ts}"，真实会话 id 存在 _sid 字段；
     0 消耗会话保留会话级记录。"""
@@ -526,88 +779,59 @@ def parse_claude(projects_dir):
                 if fname.endswith(".jsonl"):
                     files.setdefault(dname, []).append(os.path.join(sub, fname))
         for sid, flist in files.items():
-            buckets = {}   # hour_ts -> {input, output, cache_read, cache_write, calls, msgs, models}
-            hour_msgs = {}   # hour_ts -> 该小时内的全部消息数
-            title = ""
-            model = ""
-            started = ended = None
-            last_ts = None
-            msgs_total = 0
-            for fpath in flist:
-                try:
-                    with open(fpath, encoding="utf-8", errors="ignore") as fh:
-                        for line in fh:
-                            try:
-                                d = json.loads(line)
-                            except (json.JSONDecodeError, UnicodeDecodeError):
-                                continue
-                            t = d.get("type")
-                            ts = _iso_to_ts(d.get("timestamp")) or last_ts
-                            if started is None and ts:
-                                started = ts
-                            if ts:
-                                ended = ts
-                                last_ts = ts
-                                hkey = int(datetime.fromtimestamp(ts).replace(
-                                    minute=0, second=0, microsecond=0).timestamp())
-                                hour_msgs[hkey] = hour_msgs.get(hkey, 0) + 1
-                            if t == "assistant":
-                                msg = d.get("message") or {}
-                                u = msg.get("usage") or {}
-                                inp = u.get("input_tokens") or 0
-                                out = u.get("output_tokens") or 0
-                                cr = u.get("cache_read_input_tokens") or 0
-                                cw = u.get("cache_creation_input_tokens") or 0
-                                if (inp or out or cr or cw) and ts:
-                                    key = int(datetime.fromtimestamp(ts).replace(
-                                        minute=0, second=0, microsecond=0).timestamp())
-                                    b = buckets.get(key)
-                                    if b is None:
-                                        b = {"input": 0, "output": 0, "cache_read": 0,
-                                             "cache_write": 0, "calls": 0, "msgs": 0, "models": {}}
-                                        buckets[key] = b
-                                    b["input"] += inp
-                                    b["output"] += out
-                                    b["cache_read"] += cr
-                                    b["cache_write"] += cw
-                                    b["calls"] += 1
-                                    md = msg.get("model") or ""
-                                    b["models"][md] = b["models"].get(md, 0) + inp
-                                if not model and msg.get("model"):
-                                    model = msg["model"]
-                            elif t == "user" and not title:
-                                txt = _claude_text(d.get("message", {}).get("content"))
-                                title = txt[:60] if txt else "(无标题)"
-                            msgs_total += 1
-                except OSError:
-                    continue
-            if buckets:
-                for hour_ts, b in sorted(buckets.items()):
-                    b["msgs"] = hour_msgs.get(hour_ts, 0)
-                    bmodel = max(b["models"], key=b["models"].get) if b["models"] else model
-                    recs.append(_record(
-                        "claude", id=f"{sid}@{hour_ts}", _sid=sid,
-                        title=title or "(无标题)", model=bmodel, cwd=cwd, source="claude",
-                        started_at=hour_ts, ended_at=hour_ts + 3600,
-                        input=b["input"], output=b["output"],
-                        cache_read=b["cache_read"], cache_write=b["cache_write"],
-                        reasoning=0, api_calls=b["calls"], message_count=b["msgs"],
-                    ))
-            else:
-                # 0 消耗会话：保留会话级记录
-                recs.append(_record(
-                    "claude", id=sid, title=title or "(无标题)", model=model,
-                    cwd=cwd, source="claude",
-                    started_at=started, ended_at=ended,
-                    input=0, output=0, cache_read=0, cache_write=0,
-                    reasoning=0, api_calls=0, message_count=msgs_total,
-                ))
+            recs.extend(_claude_session_records(flist, sid, cwd))
+    # 同级 transcripts/ 目录：裸转录文件（ses_*.jsonl），cwd 未知
+    transcripts_dir = os.path.join(os.path.dirname(projects_dir), "transcripts")
+    if os.path.isdir(transcripts_dir):
+        for fname in sorted(os.listdir(transcripts_dir)):
+            if not fname.endswith(".jsonl"):
+                continue
+            sid = fname[:-6]
+            recs.extend(_claude_session_records(
+                [os.path.join(transcripts_dir, fname)], sid, ""))
     return recs
 
 
 # ---------------------------------------------------------------------------
 # zcode: cli/db/db.sqlite（model_usage 请求级明细）
 # ---------------------------------------------------------------------------
+
+def _subtract_overlap(value, overlap):
+    """从 value 中减去 overlap，两者都钳制到非负，结果不低于 0。"""
+    value = max(value, 0)
+    overlap = max(overlap, 0)
+    return max(value - overlap, 0)
+
+
+def _normalize_zcode_input_output(input_, output, cache_read, cache_write,
+                                  reasoning, total):
+    """归一化 zcode 的 input/output，避免缓存/推理重复计数。
+
+    zcode 的 model_usage 行把 input_tokens / output_tokens 记成「缓存/推理
+    包含式」：input_tokens 已含 cache_read + cache_write，output_tokens 已含
+    reasoning。统一记录需要五个互不重叠的桶，直接透传会把缓存和推理重复计入
+    总量。
+
+    当有 total（computed_total_tokens）时用它判定形态：若 total 等于包含式
+    之和（input+output）而非全加式之和（input+output+cache+reasoning），则该行
+    为包含式，需从 input/output 中减去重叠部分。total 缺失时无法判定，原样返回。
+    返回 (net_input, net_output)。
+    """
+    input_ = max(input_, 0)
+    output = max(output, 0)
+    cache_overlap = max(cache_read, 0) + max(cache_write, 0)
+    reasoning = max(reasoning, 0)
+    if total is None:
+        return input_, output
+    total = max(total, 0)
+    inclusive_total = input_ + output
+    exclusive_total = inclusive_total + cache_overlap + reasoning
+    if (cache_overlap > 0 or reasoning > 0) and total == inclusive_total \
+            and total != exclusive_total:
+        return (_subtract_overlap(input_, cache_overlap),
+                _subtract_overlap(output, reasoning))
+    return input_, output
+
 
 def parse_zcode(db_path):
     """zcode 会话按「本地小时桶」拆分。
@@ -641,7 +865,8 @@ def parse_zcode(db_path):
         rows = conn.execute("""
             SELECT session_id, model_id, started_at, completed_at,
                    input_tokens, output_tokens, reasoning_tokens,
-                   cache_creation_input_tokens, cache_read_input_tokens
+                   cache_creation_input_tokens, cache_read_input_tokens,
+                   computed_total_tokens
             FROM model_usage WHERE status = 'completed'""").fetchall()
         conn.close()
         buckets = {}   # (session_id, hour_ts) -> 聚合
@@ -660,8 +885,14 @@ def parse_zcode(db_path):
                     "reasoning": 0, "api_calls": 0, "models": {},
                 }
                 buckets[key] = b
-            b["input"] += r["input_tokens"] or 0
-            b["output"] += r["output_tokens"] or 0
+            # zcode 的 input/output 为缓存/推理包含式，先归一化避免重复计数
+            net_in, net_out = _normalize_zcode_input_output(
+                r["input_tokens"] or 0, r["output_tokens"] or 0,
+                r["cache_read_input_tokens"] or 0,
+                r["cache_creation_input_tokens"] or 0,
+                r["reasoning_tokens"] or 0, r["computed_total_tokens"])
+            b["input"] += net_in
+            b["output"] += net_out
             b["reasoning"] += r["reasoning_tokens"] or 0
             b["cache_write"] += r["cache_creation_input_tokens"] or 0
             b["cache_read"] += r["cache_read_input_tokens"] or 0
@@ -685,6 +916,180 @@ def parse_zcode(db_path):
             ))
     except sqlite3.Error:
         pass
+    return recs
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek Harness (DSH): sessions/<编码cwd>/<会话id>/session.jsonl[.zstd]
+# ---------------------------------------------------------------------------
+
+def parse_dsh(sessions_dir):
+    """解析 DSH 会话目录。
+
+    DSH 每个会话一个 JSONL 事件流，位于
+    <sessions_dir>/<编码cwd>/<会话id>/session.jsonl（明文）或
+    session.jsonl.zstd（zstd 多帧压缩）。文件按 zstd 帧魔数判定是否解压，
+    而非按扩展名（compression:none 时同名文件为明文）。
+
+    关键事件：
+      - session:            id / cwd / createdAt(ms) / seedLength(fork 边界)
+      - session/title:      data.title（会话标题）
+      - request/header:     data.header.config.{provider,model}（路由兜底）
+      - user/message:       首条真实用户输入（标题兜底，source.kind==user）
+      - assistant/message:  data.usage（inputTokens/outputTokens/cacheReadTokens/
+                            cacheWriteTokens/reasoningTokens）+ data.message.source
+                            （provider/model）+ time(ms) + data.turn + message.id
+
+    口径：DSH 的 inputTokens 为「未命中缓存的输入」，缓存命中单独计
+    cacheReadTokens（输入侧不相交）；reasoningTokens 是 outputTokens 的子集
+    （completion_tokens_details.reasoning_tokens），故 output = outputTokens -
+    reasoningTokens。fork 会话的 seedLength 之前的事件（父会话重放）跳过，
+    避免重复计数。用量按消息时间戳归入「本地小时桶」（与其他工具一致）。
+    """
+    recs = []
+    if not sessions_dir or not os.path.isdir(sessions_dir):
+        return recs
+    for proj in sorted(os.listdir(sessions_dir)):
+        proj_dir = os.path.join(sessions_dir, proj)
+        if not os.path.isdir(proj_dir):
+            continue
+        for sess in sorted(os.listdir(proj_dir)):
+            sess_dir = os.path.join(proj_dir, sess)
+            if not os.path.isdir(sess_dir):
+                continue
+            fpath = None
+            try:
+                for name in sorted(os.listdir(sess_dir)):
+                    if name.startswith("session.jsonl"):
+                        fpath = os.path.join(sess_dir, name)
+                        break
+            except OSError:
+                continue
+            if fpath:
+                recs.extend(_parse_dsh_file(fpath))
+    return recs
+
+
+def _parse_dsh_file(fpath):
+    """解析单个 DSH session.jsonl[.zstd] 事件流，返回统一会话记录列表。"""
+    recs = []
+    try:
+        with open(fpath, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return recs
+    if raw[:4] == _ZSTD_MAGIC:
+        data = _zstd_decompress(raw)
+        if data is None:
+            return recs
+    else:
+        data = raw
+    text = data.decode("utf-8", "ignore")
+
+    session_id = ""
+    cwd = ""
+    created_at = None
+    seed_length = 0
+    title = ""
+    first_user_text = ""
+    fallback_model = ""
+    buckets = {}   # hour_ts -> {input/output/cache_read/cache_write/reasoning/calls/models}
+    seen = set()   # 去重键（流式重复消息）
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        t = o.get("type")
+        seq = o.get("seq")
+        # fork 边界：seedLength 之前的事件是父会话重放，跳过
+        if seed_length and isinstance(seq, (int, float)) and seq < seed_length:
+            continue
+        if t == "session":
+            session_id = o.get("id") or ""
+            cwd = o.get("cwd") or ""
+            created_at = _ms_to_s(o.get("createdAt"))
+            seed_length = o.get("seedLength") or 0
+        elif t == "session/title":
+            if not title:
+                title = (o.get("data") or {}).get("title") or ""
+        elif t == "request/header":
+            cfg = ((o.get("data") or {}).get("header") or {}).get("config") or {}
+            if not fallback_model and cfg.get("model"):
+                fallback_model = cfg.get("model")
+        elif t == "user/message":
+            if not first_user_text:
+                d = o.get("data") or {}
+                if (d.get("source") or {}).get("kind") == "user":
+                    for blk in (d.get("content") or []):
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            first_user_text = (blk.get("text") or "").strip()
+                            break
+        elif t == "assistant/message":
+            d = o.get("data") or {}
+            u = d.get("usage") or {}
+            inp = u.get("inputTokens") or 0
+            out = u.get("outputTokens") or 0
+            cr = u.get("cacheReadTokens") or 0
+            cw = u.get("cacheWriteTokens") or 0
+            rsn = u.get("reasoningTokens") or 0
+            if inp == 0 and out == 0 and cr == 0 and cw == 0 and rsn == 0:
+                continue
+            ts = _ms_to_s(o.get("time"))
+            if not ts:
+                continue
+            msg = d.get("message") or {}
+            src = msg.get("source") or {}
+            model = src.get("model") or fallback_model
+            msg_id = msg.get("id") or ""
+            key = (msg_id, ts, model, inp, out, cr, cw, rsn)
+            if key in seen:
+                continue
+            seen.add(key)
+            net_out = max(0, out - rsn)   # reasoning 是 output 的子集
+            hkey = int(datetime.fromtimestamp(ts).replace(
+                minute=0, second=0, microsecond=0).timestamp())
+            b = buckets.get(hkey)
+            if b is None:
+                b = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                     "reasoning": 0, "calls": 0, "models": {}}
+                buckets[hkey] = b
+            b["input"] += inp
+            b["output"] += net_out
+            b["cache_read"] += cr
+            b["cache_write"] += cw
+            b["reasoning"] += rsn
+            b["calls"] += 1
+            if model:
+                b["models"][model] = b["models"].get(model, 0) + inp
+
+    if not session_id and not buckets:
+        return recs
+    title = title or first_user_text or "(无标题)"
+    if buckets:
+        for hour_ts, b in sorted(buckets.items()):
+            model = max(b["models"], key=b["models"].get) if b["models"] else fallback_model
+            recs.append(_record(
+                "dsh", id=f"{session_id}@{hour_ts}", _sid=session_id,
+                title=title, model=model, cwd=cwd, source="dsh",
+                started_at=hour_ts, ended_at=hour_ts + 3600,
+                input=b["input"], output=b["output"],
+                cache_read=b["cache_read"], cache_write=b["cache_write"],
+                reasoning=b["reasoning"], api_calls=b["calls"], message_count=0,
+            ))
+    else:
+        # 0 消耗会话：保留会话级记录
+        recs.append(_record(
+            "dsh", id=session_id, _sid=session_id, title=title,
+            model=fallback_model, cwd=cwd, source="dsh",
+            started_at=created_at, ended_at=None,
+            input=0, output=0, cache_read=0, cache_write=0,
+            reasoning=0, api_calls=0, message_count=0,
+        ))
     return recs
 
 
@@ -862,6 +1267,83 @@ def _zcode_messages(db_path, session_id):
     return msgs
 
 
+def _dsh_messages(sessions_dir, session_id):
+    """DSH: sessions/<编码>/<session_id>/session.jsonl[.zstd]，user/assistant 消息"""
+    msgs = []
+    if not sessions_dir or not os.path.isdir(sessions_dir):
+        return msgs
+    sid = session_id.split("@", 1)[0]
+    fpath = None
+    try:
+        for proj in os.listdir(sessions_dir):
+            cand = os.path.join(sessions_dir, proj, sid)
+            if os.path.isdir(cand):
+                for name in os.listdir(cand):
+                    if name.startswith("session.jsonl"):
+                        fpath = os.path.join(cand, name)
+                        break
+                if fpath:
+                    break
+    except OSError:
+        return msgs
+    if not fpath:
+        return msgs
+    try:
+        with open(fpath, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return msgs
+    if raw[:4] == _ZSTD_MAGIC:
+        data = _zstd_decompress(raw)
+        if data is None:
+            return msgs
+    else:
+        data = raw
+    text = data.decode("utf-8", "ignore")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        t = o.get("type")
+        if t == "user/message":
+            d = o.get("data") or {}
+            if (d.get("source") or {}).get("kind") != "user":
+                continue
+            content = ""
+            for blk in (d.get("content") or []):
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    content = (blk.get("text") or "").strip()
+                    break
+            if content:
+                msgs.append({"role": "user", "content": content, "reasoning": "",
+                             "tool": "", "ts": _ms_to_s(o.get("time"))})
+        elif t == "assistant/message":
+            d = o.get("data") or {}
+            msg = d.get("message") or {}
+            content = ""
+            reasoning = ""
+            for blk in (msg.get("content") or []):
+                if not isinstance(blk, dict):
+                    continue
+                if blk.get("type") == "text":
+                    txt = (blk.get("text") or "").strip()
+                    if txt:
+                        content = txt
+                elif blk.get("type") == "reasoning":
+                    txt = (blk.get("text") or "").strip()
+                    if txt:
+                        reasoning = txt
+            if content or reasoning:
+                msgs.append({"role": "assistant", "content": content,
+                             "reasoning": reasoning, "tool": "",
+                             "ts": _ms_to_s(o.get("time"))})
+    return msgs
+
+
 def extract_session_messages(src, session_id):
     """按数据源类型提取单个会话的对话消息（统一 [{role, content, reasoning, tool, ts}]）"""
     t = src.get("type", "hermes")
@@ -874,6 +1356,8 @@ def extract_session_messages(src, session_id):
         return _claude_messages(p, session_id)
     if t == "zcode":
         return _zcode_messages(p, session_id)
+    if t == "dsh":
+        return _dsh_messages(p, session_id)
     return []
 # ---------------------------------------------------------------------------
 # 请求级数据提取（请求明细页）
@@ -1087,6 +1571,92 @@ def _hermes_requests(db_path):
     return reqs
 
 
+def _dsh_requests(sessions_dir):
+    """DSH：每个带 usage 的 assistant/message = 一次 LLM 请求"""
+    reqs = []
+    if not sessions_dir or not os.path.isdir(sessions_dir):
+        return reqs
+    for proj in sorted(os.listdir(sessions_dir)):
+        proj_dir = os.path.join(sessions_dir, proj)
+        if not os.path.isdir(proj_dir):
+            continue
+        for sess in sorted(os.listdir(proj_dir)):
+            sess_dir = os.path.join(proj_dir, sess)
+            if not os.path.isdir(sess_dir):
+                continue
+            fpath = None
+            try:
+                for name in sorted(os.listdir(sess_dir)):
+                    if name.startswith("session.jsonl"):
+                        fpath = os.path.join(sess_dir, name)
+                        break
+            except OSError:
+                continue
+            if not fpath:
+                continue
+            try:
+                with open(fpath, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if raw[:4] == _ZSTD_MAGIC:
+                data = _zstd_decompress(raw)
+                if data is None:
+                    continue
+            else:
+                data = raw
+            text = data.decode("utf-8", "ignore")
+            sid = sess
+            fallback_model = ""
+            idx = 0
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                t = o.get("type")
+                if t == "session":
+                    sid = o.get("id") or sess
+                elif t == "request/header":
+                    cfg = ((o.get("data") or {}).get("header") or {}).get("config") or {}
+                    if not fallback_model and cfg.get("model"):
+                        fallback_model = cfg.get("model")
+                elif t == "assistant/message":
+                    d = o.get("data") or {}
+                    u = d.get("usage") or {}
+                    inp = u.get("inputTokens") or 0
+                    out = u.get("outputTokens") or 0
+                    rsn = u.get("reasoningTokens") or 0
+                    if inp == 0 and out == 0:
+                        continue
+                    msg = d.get("message") or {}
+                    src = msg.get("source") or {}
+                    model = src.get("model") or fallback_model
+                    reqs.append({
+                        "id": f"dsh-{sid}-{idx}",
+                        "tool": "dsh",
+                        "session_id": sid,
+                        "model": model,
+                        "task": "",
+                        "input": inp,
+                        "output": max(0, out - rsn),
+                        "reasoning": rsn,
+                        "cache_read": u.get("cacheReadTokens") or 0,
+                        "cache_write": u.get("cacheWriteTokens") or 0,
+                        "duration_ms": 0,
+                        "ttft_ms": 0,
+                        "status": "success",
+                        "finish_reason": "",
+                        "error": "",
+                        "started_at": _ms_to_s(o.get("time")),
+                    })
+                    idx += 1
+    return reqs
+
+
 def extract_requests(src):
     """按数据源类型提取请求记录（统一 [{id, tool, session_id, model, ...}]）"""
     t = src.get("type", "hermes")
@@ -1097,4 +1667,6 @@ def extract_requests(src):
         return _claude_requests(p)
     if t == "codex":
         return _codex_requests(p)
+    if t == "dsh":
+        return _dsh_requests(p)
     return _hermes_requests(p)

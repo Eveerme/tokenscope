@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import parsers
 
 APP_NAME = "TokenScope"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 DEFAULT_PORT = 8787
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +56,9 @@ TASK_LABELS = {
     "cron": "定时任务", "memory": "记忆", "title": "标题生成",
     "vision": "图像分析", "codex": "Codex 集成", "embedding": "向量嵌入",
 }
+
+# 以「目录」为数据源路径的工具（其余工具以数据库文件为路径）
+DIR_BASED_TOOLS = {"claude", "dsh"}
 
 # 示例定价（USD / 每百万 tokens）
 def _to_f(v):
@@ -89,6 +92,133 @@ def _load_pricing_json():
     except Exception:
         pass
     return pricing
+
+
+# ---------------------------------------------------------------------------
+# models.dev 定价更新（https://models.dev/api.json）
+# ---------------------------------------------------------------------------
+
+MODELS_DEV_URL = "https://models.dev/api.json"
+
+# 模型名前缀 → 官方 provider。models.dev 里同一模型会被「官方 + 多家转售商」
+# 收录且价格不同（转售商常有促销价），优先取官方 provider 的价格，避免取到
+# 转售价导致成本估算失真。无法判断官方时回退到输入价最低的收录方。
+_OFFICIAL_PROVIDER_BY_PREFIX = [
+    ("deepseek", "deepseek"),
+    ("gpt", "openai"), ("chatgpt", "openai"),
+    ("o1", "openai"), ("o3", "openai"), ("o4", "openai"), ("o5", "openai"),
+    ("claude", "anthropic"),
+    ("qwen", "alibaba"), ("qwq", "alibaba"), ("qvq", "alibaba"),
+    ("gemini", "google"),
+    ("glm", "zhipuai"), ("chatglm", "zhipuai"),
+    ("kimi", "moonshotai"),
+    ("llama", "meta"),
+    ("mistral", "mistral"),
+    ("grok", "xai"),
+    ("command", "cohere"),
+]
+
+
+def _official_provider(model_id):
+    """按模型名前缀推断官方 provider；无法判断返回 None。"""
+    mid = (model_id or "").lower()
+    for prefix, provider in _OFFICIAL_PROVIDER_BY_PREFIX:
+        if mid.startswith(prefix):
+            return provider
+    return None
+
+
+def _normalize_model_id(mid):
+    """归一化模型名：去掉 provider 前缀（openai/gpt-4o → gpt-4o），转小写。"""
+    if not mid:
+        return ""
+    if "/" in mid:
+        mid = mid.split("/")[-1]
+    return mid.strip().lower()
+
+
+def fetch_models_dev_pricing(timeout=15):
+    """从 models.dev 拉取最新定价。
+
+    返回 {model_id_lower: {"input","output","cache_read","cache_write"}}，
+    价格单位为 USD / 每百万 tokens（models.dev 的 cost 字段即此口径）。
+    同一模型被多家 provider 收录时优先取官方 provider 的价格，官方未收录
+    则取输入价最低的一家。失败（离线 / 超时 / 格式异常）抛出异常。
+    """
+    import urllib.request
+    req = urllib.request.Request(MODELS_DEV_URL,
+                                 headers={"User-Agent": "tokenscope/" + VERSION})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    if not isinstance(data, dict):
+        raise ValueError("models.dev 返回格式异常")
+
+    # 收集每个模型的全部候选价格（provider, cost）
+    candidates = {}
+    for prov_name, prov in data.items():
+        if not isinstance(prov, dict):
+            continue
+        models = prov.get("models")
+        if not isinstance(models, dict):
+            continue
+        for mid, m in models.items():
+            if not isinstance(m, dict):
+                continue
+            c = m.get("cost")
+            if not isinstance(c, dict):
+                continue
+            if _to_f(c.get("input")) <= 0 and _to_f(c.get("output")) <= 0:
+                continue  # 跳过无定价条目
+            key = _normalize_model_id(mid)
+            if not key:
+                continue
+            candidates.setdefault(key, []).append((prov_name, c))
+
+    # 为每个模型挑选最佳价格（官方优先，其次输入价最低）
+    lookup = {}
+    for key, cands in candidates.items():
+        official = _official_provider(key)
+        best = None
+        if official:
+            for prov, c in cands:
+                if prov == official:
+                    best = c
+                    break
+        if best is None:
+            valid = [(p, c) for p, c in cands if _to_f(c.get("input")) > 0]
+            pool = valid if valid else cands
+            best = min(pool, key=lambda x: _to_f(x[1].get("input")))[1]
+        lookup[key] = {
+            "input": _to_f(best.get("input")),
+            "output": _to_f(best.get("output")),
+            "cache_read": _to_f(best.get("cache_read")),
+            "cache_write": _to_f(best.get("cache_write")),
+        }
+    return lookup
+
+
+def refresh_pricing_from_models_dev(cfg, timeout=15):
+    """从 models.dev 刷新 cfg['pricing']：更新已有模型的官方价格，
+    保留 models.dev 未收录的模型（如自建 / 渠道专属模型）。
+
+    返回 {"updated": N, "preserved": M, "total": T}。失败抛出异常。
+    """
+    lookup = fetch_models_dev_pricing(timeout=timeout)
+    current = cfg.get("pricing", {}) or {}
+    new_pricing = {}
+    updated = 0
+    for model, price in current.items():
+        key = _normalize_model_id(model)
+        if key in lookup:
+            new_pricing[model] = lookup[key]
+            updated += 1
+        else:
+            new_pricing[model] = price  # models.dev 未收录，保留原值
+    cfg["pricing"] = new_pricing
+    save_config(cfg)
+    return {"updated": updated, "preserved": len(new_pricing) - updated,
+            "total": len(new_pricing)}
+
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -700,13 +830,14 @@ def api_sources_full(cfg):
         t = s.get("type", "hermes")
         recs = parsers.parse_source(s)
         recs = _merge_session_records(recs)   # 会话数按真实会话计（zcode 已按小时拆分）
-        exists = os.path.isfile(p) if t != "claude" else os.path.isdir(p)
+        is_dir = t in DIR_BASED_TOOLS
+        exists = os.path.isdir(p) if is_dir else os.path.isfile(p)
         meta = {
             "path": p, "name": s.get("name", t), "type": t,
             "type_label": parsers.TOOL_LABELS.get(t, t),
             "auto": s.get("auto", False), "exists": exists,
-            "size": os.path.getsize(p) if exists and t != "claude" else 0,
-            "modified_at": os.path.getmtime(p) if exists and t != "claude" else 0,
+            "size": os.path.getsize(p) if exists and not is_dir else 0,
+            "modified_at": os.path.getmtime(p) if exists and not is_dir else 0,
             "db_sessions": len(recs),
             "total_input": sum(r.get("input") or 0 for r in recs),
             "total_output": sum(r.get("output") or 0 for r in recs),
@@ -968,7 +1099,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not p:
                 return self._send_json({"error": "缺少 path"}, 400)
             p = os.path.abspath(os.path.expanduser(p))
-            if stype == "claude":
+            if stype in DIR_BASED_TOOLS:
                 if not os.path.isdir(p):
                     return self._send_json({"error": f"找不到目录: {p}"}, 400)
             else:
@@ -1006,6 +1137,15 @@ class Handler(SimpleHTTPRequestHandler):
             cfg["pricing"] = base
             save_config(cfg)
             return self._send_json({"pricing": base})
+        if path == "/api/pricing/update":
+            # 从 models.dev 拉取最新官方定价并刷新当前定价表
+            try:
+                stats = refresh_pricing_from_models_dev(cfg, timeout=25)
+            except Exception as e:
+                return self._send_json(
+                    {"error": f"从 models.dev 更新失败: {e}"}, 502)
+            return self._send_json({"pricing": cfg.get("pricing", {}),
+                                    "stats": stats})
         return self._send_json({"error": "not found"}, 404)
 
     def _route_api_delete(self, path, qs):
@@ -1086,9 +1226,19 @@ def main():
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"监听端口（默认 {DEFAULT_PORT}）")
     ap.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1）")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--no-pricing-update", action="store_true",
+                    help="启动时不自动从 models.dev 刷新模型定价")
     args = ap.parse_args()
 
     cfg = load_config()
+    # 启动时自动从 models.dev 刷新模型定价（离线时静默跳过，不影响启动）
+    if not args.no_pricing_update:
+        try:
+            stats = refresh_pricing_from_models_dev(cfg, timeout=10)
+            print(f"  模型定价: 已从 models.dev 更新 {stats['updated']}/{stats['total']} 个模型"
+                  f"（保留 {stats['preserved']} 个未收录模型）")
+        except Exception as e:
+            print(f"  模型定价: models.dev 更新失败（{e}），沿用本地定价")
     Handler.cfg = cfg
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"

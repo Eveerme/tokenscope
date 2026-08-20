@@ -91,4 +91,8 @@ export const api = {
 
   examplePricing: () =>
     req<{ pricing: Pricing }>('/api/pricing/example', { method: 'POST', body: '{}' }),
+
+  updatePricing: () =>
+    req<{ pricing: Pricing; stats: { updated: number; preserved: number; total: number } }>(
+      '/api/pricing/update', { method: 'POST', body: '{}' }),
 }

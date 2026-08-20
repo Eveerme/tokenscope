@@ -75,3 +75,68 @@ body {
 .tnum {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- 骨架屏（shimmer 流光） ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: #edf1f7;
+  border-radius: 8px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.7) 50%, transparent 100%);
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* ---------- 视图切换：淡入 + 轻微上移 ---------- */
+.view-pane {
+  animation: view-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---------- 统计卡片入场（配合内联 animation-delay 交错） ---------- */
+.card-enter {
+  animation: card-enter 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ---------- 尊重系统「减少动态效果」偏好 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after,
+  .view-pane,
+  .card-enter {
+    animation: none !important;
+  }
+  .stat-card,
+  .stat-card:hover {
+    transition: none !important;
+    transform: none !important;
+  }
+}

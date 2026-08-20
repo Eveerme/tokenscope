@@ -265,11 +265,47 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
 
 <template>
   <div class="space-y-5">
-    <!-- 加载遮罩 -->
-    <div v-if="loading" class="flex justify-center py-10">
-      <div class="text-blue-500 text-sm">加载中…</div>
-    </div>
+    <!-- 骨架屏（首次加载，尚无数据时） -->
+    <template v-if="loading && !summary">
+      <div class="skeleton h-[52px] rounded-2xl" />
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+        <div v-for="i in 6" :key="i" class="skeleton h-[104px] rounded-[14px]" />
+      </div>
+      <div class="stat-card p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="skeleton h-5 w-40" />
+          <div class="skeleton h-4 w-12" />
+        </div>
+        <div class="skeleton h-[320px] w-full" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div class="stat-card p-5">
+          <div class="skeleton h-5 w-24 mb-4" />
+          <div class="skeleton h-[280px] w-full" />
+        </div>
+        <div class="stat-card p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div class="skeleton h-5 w-24" />
+            <div class="skeleton h-4 w-32" />
+          </div>
+          <div class="flex items-center gap-5">
+            <div class="skeleton w-32 h-32 rounded-full shrink-0" />
+            <div class="flex-1 grid grid-cols-2 gap-x-4 gap-y-3">
+              <div v-for="i in 4" :key="i" class="skeleton h-11" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stat-card p-5">
+        <div class="skeleton h-5 w-24 mb-4" />
+        <div class="space-y-2.5">
+          <div v-for="i in 6" :key="i" class="skeleton h-9" />
+        </div>
+      </div>
+    </template>
 
+    <!-- 实际内容（数据就绪后） -->
+    <template v-else>
     <!-- 摘要横幅 -->
     <div
       v-if="summaryText"
@@ -278,14 +314,14 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
       <span class="font-bold text-slate-800">📊 {{ summaryText }}</span>
     </div>
 
-    <!-- 统计卡片（核心三项置前高亮） -->
+    <!-- 统计卡片（核心三项置前高亮，交错入场） -->
     <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
       <div
-        v-for="c in cards"
+        v-for="(c, i) in cards"
         :key="c.label"
-        class="stat-card p-4"
+        class="stat-card p-4 card-enter"
         :class="c.featured ? 'featured-stat' : ''"
-        :style="c.featured ? { borderTop: '3px solid ' + c.accent } : {}"
+        :style="{ animationDelay: i * 45 + 'ms', ...(c.featured ? { borderTop: '3px solid ' + c.accent } : {}) }"
       >
         <div class="flex items-center gap-2 mb-2">
           <span class="w-7 h-7 rounded-lg flex items-center justify-center text-sm font-bold" :class="c.cls">
@@ -489,5 +525,6 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
         </el-table-column>
       </el-table>
     </div>
+    </template>
   </div>
 </template>

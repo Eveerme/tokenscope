@@ -27,6 +27,7 @@ const TOOL_TAG: Record<string, { type: 'primary' | 'success' | 'warning' | 'dang
   codex: { type: 'warning', cls: 'bg-violet-50 text-violet-600' },
   claude: { type: 'warning', cls: 'bg-orange-50 text-orange-600' },
   zcode: { type: 'success', cls: 'bg-cyan-50 text-cyan-600' },
+  dsh: { type: 'success', cls: 'bg-emerald-50 text-emerald-600' },
 }
 function toolTag(tool: string) {
   return TOOL_TAG[tool] ?? { type: 'info' as const, cls: 'bg-slate-100 text-slate-500' }
