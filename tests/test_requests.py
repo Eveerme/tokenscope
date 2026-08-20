@@ -54,6 +54,36 @@ def test_codex_requests(tmp_path):
     assert x["started_at"] is not None
 
 
+def test_codex_requests_null_payload_info(tmp_path):
+    """回归：payload 为 None / info 为 None / info 缺失时不应崩溃（曾致请求明细页 500）"""
+    r = tmp_path / "rollout.jsonl"
+    r.write_text("\n".join([
+        # world_state 且 payload=None
+        json.dumps({"timestamp": "2026-01-01T10:00:00.000Z", "type": "world_state", "payload": None}),
+        # token_count 且 info=None
+        json.dumps({"timestamp": "2026-01-01T10:00:01.000Z", "type": "event_msg",
+                    "payload": {"type": "token_count", "info": None}}),
+        # token_count 且 info 缺失
+        json.dumps({"timestamp": "2026-01-01T10:00:02.000Z", "type": "event_msg",
+                    "payload": {"type": "token_count"}}),
+        # 正常 token_count（应被计入）
+        json.dumps({"timestamp": "2026-01-01T10:00:03.000Z", "type": "event_msg",
+                    "payload": {"type": "token_count", "info": {"last_token_usage": {
+                        "input_tokens": 100, "output_tokens": 50}}}}),
+    ]), encoding="utf-8")
+    db = tmp_path / "state.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE threads (id TEXT, rollout_path TEXT)")
+    conn.execute("INSERT INTO threads VALUES (?, ?)", ("t1", str(r)))
+    conn.commit()
+    conn.close()
+
+    reqs = parsers.extract_requests(_src("codex", db))
+    assert len(reqs) == 1  # 仅正常那条被计入，其余空值被安全跳过
+    assert reqs[0]["input"] == 100
+    assert reqs[0]["output"] == 50
+
+
 def test_zcode_requests(tmp_path):
     db = tmp_path / "zcode.sqlite"
     conn = sqlite3.connect(str(db))

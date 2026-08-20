@@ -424,11 +424,11 @@ def _codex_rollout_hourly(path, fallback_ts=None):
                     if meta["timestamp"] is None:
                         meta["timestamp"] = _iso_to_ts(pl.get("timestamp"))
                 elif d.get("type") == "world_state":
-                    st = d.get("payload", {}).get("state", {})
+                    st = (d.get("payload") or {}).get("state") or {}
                     if isinstance(st, dict) and st.get("model"):
                         meta["model"] = st["model"]
                 elif d.get("type") == "event_msg":
-                    pl = d.get("payload", {})
+                    pl = d.get("payload") or {}
                     if pl.get("type") != "token_count":
                         continue
                     info = pl.get("info") or {}
@@ -1499,11 +1499,11 @@ def _codex_requests(state_db):
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
                     if d.get("type") == "world_state":
-                        st = d.get("payload", {}).get("state", {})
+                        st = (d.get("payload") or {}).get("state") or {}
                         if isinstance(st, dict) and st.get("model"):
                             model = st["model"]
-                    elif d.get("type") == "event_msg" and d.get("payload", {}).get("type") == "token_count":
-                        lu = (d["payload"]["info"].get("last_token_usage") or {})
+                    elif d.get("type") == "event_msg" and (d.get("payload") or {}).get("type") == "token_count":
+                        lu = ((d.get("payload") or {}).get("info") or {}).get("last_token_usage") or {}
                         inp = lu.get("input_tokens") or 0
                         out = lu.get("output_tokens") or 0
                         if inp > 0 or out > 0:
