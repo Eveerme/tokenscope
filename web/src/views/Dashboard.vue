@@ -502,9 +502,6 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="推理" align="right" width="90">
-          <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
-        </el-table-column>
         <el-table-column label="估算成本" align="right" width="100">
           <template #default="{ row }">
             <span :class="row.cost != null ? '' : 'text-slate-300'" :title="row.cost != null ? '' : '该模型未配置定价'">
@@ -548,9 +545,6 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="推理" align="right" width="90">
-          <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
-        </el-table-column>
         <el-table-column label="估算成本" align="right" width="100">
           <template #default="{ row }">
             <span :class="row.cost != null ? '' : 'text-slate-300'" :title="row.cost != null ? '' : '该工具未配置定价'">
@@ -590,9 +584,6 @@ const projectRows = computed<ProjectStat[]>(() => summary.value?.by_project ?? [
               {{ projectHitRate(row) != null ? projectHitRate(row)!.toFixed(1) + '%' : '—' }}
             </span>
           </template>
-        </el-table-column>
-        <el-table-column label="推理" align="right" width="90">
-          <template #default="{ row }">{{ fmtTokens(row.reasoning) }}</template>
         </el-table-column>
         <el-table-column label="估算成本" align="right" width="100">
           <template #default="{ row }">{{ fmtCost(row.cost) }}</template>
