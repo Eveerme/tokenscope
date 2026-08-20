@@ -501,7 +501,9 @@ def api_summary(cfg, qs):
                                     "api_calls": 0, "cost": None, "priced": False,
                                     "cache_savings": 0.0})
     by_tool = defaultdict(lambda: {"key": "", "label": "", "sessions": 0, "input": 0, "output": 0,
-                                   "cache_read": 0, "api_calls": 0, "cost": None})
+                                   "cache_read": 0, "cache_write": 0, "reasoning": 0,
+                                   "api_calls": 0, "cost": None, "priced": False,
+                                   "cache_savings": 0.0})
     by_source = defaultdict(lambda: {"key": "", "label": "", "sessions": 0, "input": 0, "output": 0,
                                      "cache_read": 0, "api_calls": 0, "cost": None})
     by_project = defaultdict(lambda: {"key": "", "sessions": 0, "input": 0, "output": 0,
@@ -544,9 +546,14 @@ def api_summary(cfg, qs):
         bt["input"] += r.get("input") or 0
         bt["output"] += r.get("output") or 0
         bt["cache_read"] += r.get("cache_read") or 0
+        bt["cache_write"] += r.get("cache_write") or 0
+        bt["reasoning"] += r.get("reasoning") or 0
         bt["api_calls"] += r.get("api_calls") or 0
         if c is not None:
             bt["cost"] = (bt["cost"] or 0) + c
+            bt["priced"] = True
+        if cs is not None:
+            bt["cache_savings"] += cs
 
         bs = by_source[sk]
         bs["input"] += r.get("input") or 0
@@ -572,6 +579,7 @@ def api_summary(cfg, qs):
         v["cache_savings"] = round(v["cache_savings"], 4)
     for k, v in by_tool.items():
         v["sessions"] = len(tool_sids[k])
+        v["cache_savings"] = round(v["cache_savings"], 4)
     for k, v in by_source.items():
         v["sessions"] = len(source_sids[k])
     for k, v in by_project.items():

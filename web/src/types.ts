@@ -44,9 +44,20 @@ export interface GroupStat {
   cost?: number | null
 }
 
-export interface ToolStat extends GroupStat {
+export interface ToolStat {
   key: string
   label: string
+  sessions: number
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  reasoning: number
+  api_calls: number
+  cost: number | null
+  priced: boolean
+  /** 该工具缓存命中相比按输入原价计费节省的金额（USD） */
+  cache_savings: number
 }
 
 export interface ProjectStat {

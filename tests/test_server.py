@@ -24,6 +24,11 @@ class TestAggregation:
         assert t["output"] == 550 + 25 + 22 + 26
         # by_tool 四个工具齐全
         assert {x["key"] for x in summ["by_tool"]} == {"hermes", "codex", "claude", "zcode"}
+        # by_tool 字段与 by_model 对齐（含 cache_write/reasoning/priced/cache_savings）
+        bt = {x["key"]: x for x in summ["by_tool"]}
+        for k in ("hermes", "codex", "claude", "zcode"):
+            for f in ("cache_write", "reasoning", "priced", "cache_savings", "sessions"):
+                assert f in bt[k], f"by_tool[{k}] 缺少字段 {f}"
 
     def test_tool_filter(self, hermes_db, codex_db):
         cfg = _cfg([("hermes", hermes_db), ("codex", codex_db)])
